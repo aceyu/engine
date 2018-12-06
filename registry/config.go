@@ -33,22 +33,22 @@ type serviceConfig struct {
 
 var (
 	// DefaultNamespace is the default namespace
-	DefaultNamespace = "docker.io"
+	DefaultNamespace = "registry.docker.i.fbank.com"
 	// DefaultRegistryVersionHeader is the name of the default HTTP header
 	// that carries Registry version info
 	DefaultRegistryVersionHeader = "Docker-Distribution-Api-Version"
 
 	// IndexHostname is the index hostname
-	IndexHostname = "index.docker.io"
+	IndexHostname = "registry.docker.i.fbank.com"
 	// IndexServer is used for user auth and image search
 	IndexServer = "https://" + IndexHostname + "/v1/"
 	// IndexName is the name of the index
-	IndexName = "docker.io"
+	IndexName = "registry.docker.i.fbank.com"
 
 	// DefaultV2Registry is the URI of the default v2 registry
 	DefaultV2Registry = &url.URL{
 		Scheme: "https",
-		Host:   "registry-1.docker.io",
+		Host:   "registry.docker.i.fbank.com",
 	}
 )
 
@@ -337,7 +337,8 @@ func ValidateMirror(val string) (string, error) {
 func ValidateIndexName(val string) (string, error) {
 	// TODO: upstream this to check to reference package
 	if val == "index.docker.io" {
-		val = "docker.io"
+		// val = "docker.io"
+		val = "registry.docker.i.fbank.com"
 	}
 	if strings.HasPrefix(val, "-") || strings.HasSuffix(val, "-") {
 		return "", fmt.Errorf("invalid index name (%s). Cannot begin or end with a hyphen", val)
