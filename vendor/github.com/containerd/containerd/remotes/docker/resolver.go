@@ -272,8 +272,10 @@ func (r *dockerResolver) base(refspec reference.Spec) (*dockerBase, error) {
 	host := refspec.Hostname()
 	base.Scheme = "https"
 
-	if host == "docker.io" {
-		base.Host = "registry-1.docker.io"
+	//if host == "docker.io" {
+	if host == "registry.docker.i.fbank.com" {
+		//base.Host = "registry-1.docker.io"
+		base.Host = "registry.docker.i.fbank.com"
 	} else {
 		base.Host = host
 

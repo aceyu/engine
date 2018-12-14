@@ -10,7 +10,8 @@ import (
 )
 
 var (
-	legacyDefaultDomain = "index.docker.io"
+	// legacyDefaultDomain = "index.docker.io"
+	legacyDefaultDomain = "registry.docker.i.fbank.com"
 	// defaultDomain       = "docker.io"
 	defaultDomain    = "registry.docker.i.fbank.com"
 	officialRepoName = "library"

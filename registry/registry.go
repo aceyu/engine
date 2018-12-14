@@ -127,7 +127,7 @@ func HTTPClient(transport http.RoundTripper) *http.Client {
 
 func trustedLocation(req *http.Request) bool {
 	var (
-		trusteds = []string{"docker.com", "docker.io"}
+		trusteds = []string{"registry.docker.i.fbank.com", "docker.com", "docker.io"}
 		hostname = strings.SplitN(req.Host, ":", 2)[0]
 	)
 	if req.URL.Scheme != "https" {
