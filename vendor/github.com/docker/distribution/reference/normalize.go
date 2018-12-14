@@ -12,9 +12,8 @@ import (
 var (
 	legacyDefaultDomain = "index.docker.io"
 	// defaultDomain       = "docker.io"
-	defaultDomain = "registry.docker.i.fbank.com"
-	// officialRepoName = "library"
-	officialRepoName = ""
+	defaultDomain    = "registry.docker.i.fbank.com"
+	officialRepoName = "library"
 	defaultTag       = "latest"
 )
 
@@ -71,10 +70,9 @@ func splitDockerDomain(name string) (domain, remainder string) {
 	if domain == legacyDefaultDomain {
 		domain = defaultDomain
 	}
-	// edit by zac, private repository doesn't need default repo name
-	// if domain == defaultDomain && !strings.ContainsRune(remainder, '/') {
-	// 	remainder = officialRepoName + "/" + remainder
-	// }
+	if domain == defaultDomain && !strings.ContainsRune(remainder, '/') {
+		remainder = officialRepoName + "/" + remainder
+	}
 	return
 }
 
