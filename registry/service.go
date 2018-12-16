@@ -108,6 +108,7 @@ func (s *DefaultService) LoadInsecureRegistries(registries []string) error {
 // It can be used to verify the validity of a client's credentials.
 func (s *DefaultService) Auth(ctx context.Context, authConfig *types.AuthConfig, userAgent string) (status, token string, err error) {
 	// TODO Use ctx when searching for repositories
+	logrus.Info("authConfg=%v, userAgent=%s", authConfig, userAgent)
 	serverAddress := authConfig.ServerAddress
 	if serverAddress == "" {
 		serverAddress = IndexServer
