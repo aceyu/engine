@@ -33,22 +33,22 @@ type serviceConfig struct {
 
 var (
 	// DefaultNamespace is the default namespace
-	DefaultNamespace = "registry1.docker.i.fbank.com"
+	DefaultNamespace = "registry.docker.i.fbank.com"
 	// DefaultRegistryVersionHeader is the name of the default HTTP header
 	// that carries Registry version info
 	DefaultRegistryVersionHeader = "Docker-Distribution-Api-Version"
 
 	// IndexHostname is the index hostname
-	IndexHostname = "registry1.docker.i.fbank.com"
+	IndexHostname = "registry.docker.i.fbank.com"
 	// IndexServer is used for user auth and image search
 	IndexServer = "https://" + IndexHostname + "/v1/"
 	// IndexName is the name of the index
-	IndexName = "registry1.docker.i.fbank.com"
+	IndexName = "registry.docker.i.fbank.com"
 
 	// DefaultV2Registry is the URI of the default v2 registry
 	DefaultV2Registry = &url.URL{
 		Scheme: "https",
-		Host:   "registry1.docker.i.fbank.com",
+		Host:   "registry.docker.i.fbank.com",
 	}
 )
 

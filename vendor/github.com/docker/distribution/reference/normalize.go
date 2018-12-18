@@ -11,9 +11,9 @@ import (
 
 var (
 	// legacyDefaultDomain = "index.docker.io"
-	legacyDefaultDomain = "registry1.docker.i.fbank.com"
+	legacyDefaultDomain = "registry.docker.i.fbank.com"
 	// defaultDomain       = "docker.io"
-	defaultDomain    = "registry1.docker.i.fbank.com"
+	defaultDomain    = "registry.docker.i.fbank.com"
 	officialRepoName = "library"
 	defaultTag       = "latest"
 )
