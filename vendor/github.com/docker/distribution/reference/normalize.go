@@ -10,12 +10,10 @@ import (
 )
 
 var (
-	// legacyDefaultDomain = "index.docker.io"
-	legacyDefaultDomain = "registry.docker.i.fbank.com"
-	// defaultDomain       = "docker.io"
-	defaultDomain    = "registry.docker.i.fbank.com"
-	officialRepoName = "library"
-	defaultTag       = "latest"
+	legacyDefaultDomain = "index.docker.io"
+	defaultDomain       = "docker.io"
+	officialRepoName    = "library"
+	defaultTag          = "latest"
 )
 
 // normalizedNamed represents a name which has been

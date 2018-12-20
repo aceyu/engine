@@ -78,6 +78,7 @@ func installCommonConfigFlags(conf *config.Config, flags *pflag.FlagSet) {
 	flags.Var(opts.NewQuotedString(&conf.TrustKeyPath), "deprecated-key-path", "Path to key file for ID and image signing")
 	flags.MarkHidden("deprecated-key-path")
 
+	flags.Var(opts.NewListOptsRef(&conf.AdditionalRegistries, registry.ValidateIndexName), "add-registry", "Registry to query before a public one")
 	conf.MaxConcurrentDownloads = &maxConcurrentDownloads
 	conf.MaxConcurrentUploads = &maxConcurrentUploads
 }

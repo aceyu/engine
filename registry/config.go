@@ -33,22 +33,22 @@ type serviceConfig struct {
 
 var (
 	// DefaultNamespace is the default namespace
-	DefaultNamespace = "registry.docker.i.fbank.com"
+	DefaultNamespace = "docker.io"
 	// DefaultRegistryVersionHeader is the name of the default HTTP header
 	// that carries Registry version info
 	DefaultRegistryVersionHeader = "Docker-Distribution-Api-Version"
 
 	// IndexHostname is the index hostname
-	IndexHostname = "registry.docker.i.fbank.com"
+	IndexHostname = "index.docker.io"
 	// IndexServer is used for user auth and image search
 	IndexServer = "https://" + IndexHostname + "/v1/"
 	// IndexName is the name of the index
-	IndexName = "registry.docker.i.fbank.com"
+	IndexName = "docker.io"
 
 	// DefaultV2Registry is the URI of the default v2 registry
 	DefaultV2Registry = &url.URL{
 		Scheme: "https",
-		Host:   "registry.docker.i.fbank.com",
+		Host:   "registry-1.docker.io",
 	}
 )
 
@@ -66,6 +66,26 @@ var (
 
 // for mocking in unit tests
 var lookupIP = net.LookupIP
+
+var DefaultRegistries = []string{IndexName}
+
+func IndexServerName() string {
+	if len(DefaultRegistries) < 1 {
+		return ""
+	}
+	return DefaultRegistries[0]
+}
+
+// IndexServerAddress returns index uri of default registry.
+func IndexServerAddress() string {
+	if IndexServerName() == IndexName {
+		return IndexServer
+	} else if IndexServerName() == "" {
+		return ""
+	} else {
+		return fmt.Sprintf("https://%s/v1/", IndexServerName())
+	}
+}
 
 // newServiceConfig returns a new instance of ServiceConfig
 func newServiceConfig(options ServiceOptions) (*serviceConfig, error) {
@@ -227,12 +247,22 @@ skip:
 		}
 	}
 
-	// Configure public registry.
-	config.IndexConfigs[IndexName] = &registrytypes.IndexInfo{
-		Name:     IndexName,
-		Mirrors:  config.Mirrors,
-		Secure:   true,
-		Official: true,
+	for _, r := range DefaultRegistries {
+		var mirrors []string
+		if config.IndexConfigs[r] == nil {
+			// Use mirrors only with official index
+			if r == IndexName {
+				mirrors = config.Mirrors
+			} else {
+				mirrors = make([]string, 0)
+			}
+			config.IndexConfigs[r] = &registrytypes.IndexInfo{
+				Name:     r,
+				Mirrors:  mirrors,
+				Secure:   isSecureIndex(config, r),
+				Official: r == IndexName,
+			}
+		}
 	}
 
 	return nil
@@ -337,8 +367,15 @@ func ValidateMirror(val string) (string, error) {
 func ValidateIndexName(val string) (string, error) {
 	// TODO: upstream this to check to reference package
 	if val == "index.docker.io" {
-		// val = "docker.io"
-		val = "registry.docker.i.fbank.com"
+		val = "docker.io"
+	}
+	for _, r := range DefaultRegistries {
+		if val == r {
+			break
+		}
+		if val == "index."+r {
+			val = r
+		}
 	}
 	if strings.HasPrefix(val, "-") || strings.HasSuffix(val, "-") {
 		return "", fmt.Errorf("invalid index name (%s). Cannot begin or end with a hyphen", val)
@@ -433,7 +470,7 @@ func ParseRepositoryInfo(reposName reference.Named) (*RepositoryInfo, error) {
 
 // ParseSearchIndexInfo will use repository name to get back an indexInfo.
 func ParseSearchIndexInfo(reposName string) (*registrytypes.IndexInfo, error) {
-	indexName, _ := splitReposSearchTerm(reposName)
+	indexName, _ := splitReposSearchTerm(reposName, true)
 
 	indexInfo, err := newIndexInfo(emptyServiceConfig, indexName)
 	if err != nil {

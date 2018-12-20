@@ -198,6 +198,8 @@ type CommonConfig struct {
 	// ContainerAddr is the address used to connect to containerd if we're
 	// not starting it ourselves
 	ContainerdAddr string `json:"containerd,omitempty"`
+
+	AdditionalRegistries []string `json:"add-registry,omitempty"`
 }
 
 // IsValueSet returns true if a configuration value

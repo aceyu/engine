@@ -23,7 +23,7 @@ var acceptedSearchFilterTags = map[string]bool{
 // service.
 func (i *ImageService) SearchRegistryForImages(ctx context.Context, filtersArgs string, term string, limit int,
 	authConfig *types.AuthConfig,
-	headers map[string][]string) (*registrytypes.SearchResults, error) {
+	headers map[string][]string, noIndex bool) ([]registrytypes.SearchResultExt, error) {
 
 	searchFilters, err := filters.FromJSON(filtersArgs)
 	if err != nil {
@@ -62,13 +62,13 @@ func (i *ImageService) SearchRegistryForImages(ctx context.Context, filtersArgs 
 		}
 	}
 
-	unfilteredResult, err := i.registryService.Search(ctx, term, limit, authConfig, dockerversion.DockerUserAgent(ctx), headers)
+	unfilteredResult, err := i.registryService.Search(ctx, term, limit, authConfig, dockerversion.DockerUserAgent(ctx), headers, noIndex)
 	if err != nil {
 		return nil, err
 	}
 
-	filteredResults := []registrytypes.SearchResult{}
-	for _, result := range unfilteredResult.Results {
+	filteredResults := []registrytypes.SearchResultExt{}
+	for _, result := range unfilteredResult {
 		if searchFilters.Contains("is-automated") {
 			if isAutomated != result.IsAutomated {
 				continue
@@ -87,9 +87,10 @@ func (i *ImageService) SearchRegistryForImages(ctx context.Context, filtersArgs 
 		filteredResults = append(filteredResults, result)
 	}
 
-	return &registrytypes.SearchResults{
-		Query:      unfilteredResult.Query,
-		NumResults: len(filteredResults),
-		Results:    filteredResults,
-	}, nil
+	// return &registrytypes.SearchResults{
+	// 	Query:      unfilteredResult.Query,
+	// 	NumResults: len(filteredResults),
+	// 	Results:    filteredResults,
+	// }, nil
+	return filteredResults, nil
 }

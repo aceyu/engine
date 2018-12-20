@@ -124,6 +124,12 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 		}()
 	}
 
+	newDefaultRegistries := []string{}
+	for _, r := range cli.AdditionalRegistries {
+		newDefaultRegistries = append(newDefaultRegistries, r)
+	}
+	registry.DefaultRegistries = append(newDefaultRegistries, registry.DefaultRegistries...)
+
 	serverConfig, err := newAPIServerConfig(cli)
 	if err != nil {
 		return fmt.Errorf("Failed to create API server: %v", err)

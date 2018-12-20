@@ -3,18 +3,22 @@ package images // import "github.com/docker/docker/daemon/images"
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 
-	"github.com/docker/distribution/reference"
+	distreference "github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/image"
 	"github.com/docker/docker/layer"
 	"github.com/docker/docker/pkg/system"
+	"github.com/docker/docker/reference"
+	"github.com/docker/docker/registry"
 )
 
 var acceptedImageFilterTags = map[string]bool{
@@ -36,6 +40,54 @@ func (r byCreated) Less(i, j int) bool { return r[i].Created < r[j].Created }
 // Map returns a map of all images in the ImageStore
 func (i *ImageService) Map() map[image.ID]*image.Image {
 	return i.imageStore.Map()
+}
+
+func matchReference(filter string, ref distreference.Named) bool {
+	logrus.Debugf("matchReference: filter=%s, ref=%v", filter, ref)
+	if filter == "" {
+		return true
+	}
+
+	var filterTagged bool
+	filterRef, err := distreference.ParseNamed(filter)
+	if err == nil { // parse error means wildcard repo
+		if _, ok := filterRef.(distreference.NamedTagged); ok {
+			filterTagged = true
+		}
+	}
+
+	refBelongsToDefaultRegistry := false
+	indexName, remoteNameStr := distreference.SplitHostname(ref)
+	for _, reg := range registry.DefaultRegistries {
+		if indexName == reg || indexName == "" {
+			refBelongsToDefaultRegistry = true
+			break
+		}
+	}
+
+	// If the repository belongs to default registry, match against fully
+	// qualified and unqualified name.
+	references := []distreference.Named{ref}
+	if reference.IsReferenceFullyQualified(ref) && refBelongsToDefaultRegistry {
+		newRef, err := reference.SubstituteReferenceName(ref, remoteNameStr)
+		if err == nil {
+			references = append(references, newRef)
+		}
+	}
+
+	for _, ref := range references {
+		if filterTagged {
+			// filter by tag, require full ref match
+			if ref.String() == filter {
+				return true
+			}
+		} else if matched, err := path.Match(filter, ref.Name()); matched && err == nil {
+			// name only match, FIXME: docs say exact
+			return true
+		}
+	}
+
+	return false
 }
 
 // Images returns a filtered list of images. filterArgs is a JSON-encoded set
@@ -144,24 +196,24 @@ func (i *ImageService) Images(imageFilters filters.Args, all bool, withExtraAttr
 		newImage := newImage(img, size)
 
 		for _, ref := range i.referenceStore.References(id.Digest()) {
+			var found bool
 			if imageFilters.Contains("reference") {
-				var found bool
-				var matchErr error
 				for _, pattern := range imageFilters.Get("reference") {
-					found, matchErr = reference.FamiliarMatch(pattern, ref)
-					if matchErr != nil {
-						return nil, matchErr
+					if !matchReference(pattern, ref) {
+						found = false
+						continue
 					}
+					found = true
 				}
 				if !found {
 					continue
 				}
 			}
-			if _, ok := ref.(reference.Canonical); ok {
-				newImage.RepoDigests = append(newImage.RepoDigests, reference.FamiliarString(ref))
+			if _, ok := ref.(distreference.Canonical); ok {
+				newImage.RepoDigests = append(newImage.RepoDigests, distreference.FamiliarString(ref))
 			}
-			if _, ok := ref.(reference.NamedTagged); ok {
-				newImage.RepoTags = append(newImage.RepoTags, reference.FamiliarString(ref))
+			if _, ok := ref.(distreference.NamedTagged); ok {
+				newImage.RepoTags = append(newImage.RepoTags, distreference.FamiliarString(ref))
 			}
 		}
 		if newImage.RepoDigests == nil && newImage.RepoTags == nil {

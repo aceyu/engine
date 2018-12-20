@@ -32,6 +32,7 @@ import (
 	"github.com/docker/docker/daemon/network"
 	"github.com/docker/docker/errdefs"
 	"github.com/sirupsen/logrus"
+
 	// register graph drivers
 	_ "github.com/docker/docker/daemon/graphdriver/register"
 	"github.com/docker/docker/daemon/stats"
@@ -809,7 +810,7 @@ func NewDaemon(config *config.Config, registryService registry.Service, containe
 	// For backwards compatibility, we just put it under the windowsfilter
 	// directory regardless.
 	refStoreLocation := filepath.Join(imageRoot, `repositories.json`)
-	rs, err := refstore.NewReferenceStore(refStoreLocation)
+	rs, err := refstore.NewReferenceStore(refStoreLocation, registry.DefaultRegistries...)
 	if err != nil {
 		return nil, fmt.Errorf("Couldn't create reference store repository: %s", err)
 	}
