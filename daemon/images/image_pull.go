@@ -2,6 +2,7 @@ package images // import "github.com/docker/docker/daemon/images"
 
 import (
 	"context"
+	"github.com/sirupsen/logrus"
 	"io"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	progressutils "github.com/docker/docker/distribution/utils"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/progress"
+	refstore "github.com/docker/docker/reference"
 	"github.com/docker/docker/registry"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -26,11 +28,12 @@ func (i *ImageService) PullImage(ctx context.Context, image, tag string, platfor
 	// trailing :. This is ugly, but let's not break API
 	// compatibility.
 	image = strings.TrimSuffix(image, ":")
-
-	ref, err := reference.ParseNormalizedNamed(image)
+	logrus.Debugf("image_pull.go, image=%s, tag=%s",image, tag)
+	ref, err := refstore.ParseNormalizedNamed(image)
 	if err != nil {
 		return errdefs.InvalidParameter(err)
 	}
+	logrus.Debugf("image_pull.go,ref name=%s, string=%s",ref.Name(), ref.String())
 
 	if tag != "" {
 		// The "tag" could actually be a digest.

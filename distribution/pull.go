@@ -53,11 +53,10 @@ func newPuller(endpoint registry.APIEndpoint, repoInfo *registry.RepositoryInfo,
 // fully qualified, image will be pulled from given registry. Otherwise
 // additional registries will be queried until the reference is found.
 func Pull(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullConfig) error {
-
-	logrus.Debug(ref, imagePullConfig)
 	// Unless the index name is specified, iterate over all registries until
 	// the matching image is found.
 	if refstore.IsReferenceFullyQualified(ref) {
+		logrus.Debug("pull.go IsReferenceFullyQualified")
 		return pullFromRegistry(ctx, ref, imagePullConfig)
 	}
 	// TODO(runcom): this should be moved before the check above for consistency...
@@ -69,8 +68,10 @@ func Pull(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullCo
 		return err
 	}
 	for i, r := range registry.DefaultRegistries {
+		logrus.Debugf("pull.go, i=%d, len=%d", i, len(registry.DefaultRegistries))
 		// Prepend the index name to the image name.
 		fqr, err := refstore.QualifyUnqualifiedReference(ref, r)
+		logrus.Debugf("pull.go, name=%s, string=%s", fqr.Name(), fqr.String())
 		if err != nil {
 			errStr := fmt.Sprintf("Failed to fully qualify %q name with %q registry: %v", ref.Name(), r, err)
 			if i == len(registry.DefaultRegistries)-1 {
@@ -80,6 +81,7 @@ func Pull(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullCo
 		}
 		if err := pullFromRegistry(ctx, fqr, imagePullConfig); err != nil {
 			// make sure we get a final "Error response from daemon: "
+			logrus.Debugf("pull.go2, i=%d, len=%d", i, len(registry.DefaultRegistries))
 			if i == len(registry.DefaultRegistries)-1 {
 				return err
 			}

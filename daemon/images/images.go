@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 
 	distreference "github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
@@ -43,7 +42,6 @@ func (i *ImageService) Map() map[image.ID]*image.Image {
 }
 
 func matchReference(filter string, ref distreference.Named) bool {
-	logrus.Debugf("matchReference: filter=%s, ref=%v", filter, ref)
 	if filter == "" {
 		return true
 	}

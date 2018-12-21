@@ -3,13 +3,13 @@ package reference // import "github.com/docker/docker/reference"
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
 
 	"github.com/docker/distribution/reference"
-	distreference "github.com/docker/distribution/reference"
 	"github.com/docker/docker/pkg/ioutils"
 	"github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
@@ -138,10 +138,11 @@ func (store *store) addReference(ref reference.Named, id digest.Digest, force bo
 	if err != nil {
 		return err
 	}
-
-	refName := reference.FamiliarName(ref)
-	refStr := reference.FamiliarString(ref)
-
+	logrus.Debugf("store.Repositories=%v", store.Repositories)
+	logrus.Debugf("addReference----1, name=%s, string=%s", ref.Name(), ref.String())
+	refName := FamiliarName(ref)
+	refStr := FamiliarString(ref)
+	logrus.Debugf("addReference----2, name=%s, string=%s", refName, refStr)
 	if refName == string(digest.Canonical) {
 		return errors.WithStack(invalidTagError("refusing to create an ambiguous tag using digest algorithm as name"))
 	}
@@ -149,7 +150,8 @@ func (store *store) addReference(ref reference.Named, id digest.Digest, force bo
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	repository, exists := store.Repositories[refName]
+	//repository, exists := store.Repositories[refName]
+	repository, exists := store.Repositories[ref.Name()]
 	if !exists || repository == nil {
 		repository = make(map[string]digest.Digest)
 		store.Repositories[refName] = repository
@@ -198,7 +200,7 @@ func (store *store) Delete(ref reference.Named) (bool, error) {
 
 	ref = reference.TagNameOnly(ref)
 
-	refStr := reference.FamiliarString(ref)
+	refStr := FamiliarString(ref)
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -240,7 +242,7 @@ func (store *store) Get(ref reference.Named) (digest.Digest, error) {
 		ref = reference.TagNameOnly(ref)
 	}
 
-	refStr := reference.FamiliarString(ref)
+	refStr := FamiliarString(ref)
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
@@ -290,7 +292,7 @@ func (store *store) ReferencesByName(ref reference.Named) []Association {
 
 	var associations []Association
 	for refStr, refID := range namedRepo.repository {
-		ref, err := reference.ParseNormalizedNamed(refStr)
+		ref, err := ParseNormalizedNamed(refStr)
 		if err != nil {
 			// Should never happen
 			return nil
@@ -328,7 +330,7 @@ func (store *store) reload() error {
 
 	for _, repository := range store.Repositories {
 		for refStr, refID := range repository {
-			ref, err := reference.ParseNormalizedNamed(refStr)
+			ref, err := ParseNormalizedNamed(refStr)
 			if err != nil {
 				// Should never happen
 				continue
@@ -349,7 +351,7 @@ func (store *store) reload() error {
 //   2. precise match after normalization
 //   3. match after prefixing with default registry name and normalization
 // *Default registry* here means any registry in registry.RegistryList.
-func (store *store) getMatchingReferenceList(ref distreference.Named) (result []namedRepository) {
+func (store *store) getMatchingReferenceList(ref reference.Named) (result []namedRepository) {
 	repoMap := map[string]struct{}{}
 	addResult := func(name string, repo repository) bool {
 		if _, exists := repoMap[name]; exists {
@@ -364,7 +366,7 @@ func (store *store) getMatchingReferenceList(ref distreference.Named) (result []
 	}
 
 	// precise match
-	repoName := reference.FamiliarName(ref)
+	repoName := FamiliarName(ref)
 	if r, exists := store.Repositories[repoName]; exists {
 		addResult(repoName, r)
 	}
