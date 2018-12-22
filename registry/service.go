@@ -214,7 +214,7 @@ func (s *DefaultService) Search(ctx context.Context, term string, limit int, aut
 		if err := s.searchTerm(term, limit, authConfig, userAgent, headers, &results); err != nil {
 			return nil, err
 		}
-	} else if len(DefaultRegistries) < 1 {
+	} else if len(QueryRegistries()) < 1 {
 		return nil, fmt.Errorf("No configured repository to search.")
 	} else {
 		var (
@@ -223,14 +223,14 @@ func (s *DefaultService) Search(ctx context.Context, term string, limit int, aut
 			resultChan       = make(chan error)
 		)
 		// query all registries in parallel
-		for i, r := range DefaultRegistries {
+		for i, r := range QueryRegistries() {
 			tmp := term
 			if i > 0 {
 				tmp = fmt.Sprintf("%s/%s", r, term)
 			}
 			go searchRoutine(tmp, resultChan)
 		}
-		for range DefaultRegistries {
+		for range QueryRegistries() {
 			err = <-resultChan
 			if err == nil {
 				successfulSearch = true
@@ -404,13 +404,13 @@ func removeSearchDuplicates(data []registrytypes.SearchResultExt) []registrytype
 			// Find out whose index has higher priority (the lower the number
 			// the higher the priority).
 			var prioPrev, prioCurr int
-			for prioPrev = 0; prioPrev < len(DefaultRegistries); prioPrev++ {
-				if prev.IndexName == DefaultRegistries[prioPrev] {
+			for prioPrev = 0; prioPrev < len(QueryRegistries()); prioPrev++ {
+				if prev.IndexName == QueryRegistries()[prioPrev] {
 					break
 				}
 			}
-			for prioCurr = 0; prioCurr < len(DefaultRegistries); prioCurr++ {
-				if curr.IndexName == DefaultRegistries[prioCurr] {
+			for prioCurr = 0; prioCurr < len(QueryRegistries()); prioCurr++ {
+				if curr.IndexName == QueryRegistries()[prioCurr] {
 					break
 				}
 			}

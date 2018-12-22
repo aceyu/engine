@@ -810,7 +810,7 @@ func NewDaemon(config *config.Config, registryService registry.Service, containe
 	// For backwards compatibility, we just put it under the windowsfilter
 	// directory regardless.
 	refStoreLocation := filepath.Join(imageRoot, `repositories.json`)
-	rs, err := refstore.NewReferenceStore(refStoreLocation, registry.DefaultRegistries...)
+	rs, err := refstore.NewReferenceStore(refStoreLocation)
 	if err != nil {
 		return nil, fmt.Errorf("Couldn't create reference store repository: %s", err)
 	}

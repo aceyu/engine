@@ -67,13 +67,25 @@ var (
 // for mocking in unit tests
 var lookupIP = net.LookupIP
 
-var DefaultRegistries = []string{IndexName}
+var DefaultRegistry = DefaultNamespace
+
+var queryRegisties = []string{}
+
+func SetDefaultRegistry(defaultRegistry string) {
+	DefaultRegistry = defaultRegistry
+	if DefaultRegistry == DefaultNamespace {
+		queryRegisties = append(queryRegisties, DefaultNamespace)
+	} else {
+		queryRegisties = append(queryRegisties, DefaultRegistry , DefaultNamespace)
+	}
+}
+
+func QueryRegistries() []string {
+	return queryRegisties
+}
 
 func IndexServerName() string {
-	if len(DefaultRegistries) < 1 {
-		return ""
-	}
-	return DefaultRegistries[0]
+	return DefaultRegistry
 }
 
 // IndexServerAddress returns index uri of default registry.
@@ -247,21 +259,19 @@ skip:
 		}
 	}
 
-	for _, r := range DefaultRegistries {
-		var mirrors []string
-		if config.IndexConfigs[r] == nil {
-			// Use mirrors only with official index
-			if r == IndexName {
-				mirrors = config.Mirrors
-			} else {
-				mirrors = make([]string, 0)
-			}
-			config.IndexConfigs[r] = &registrytypes.IndexInfo{
-				Name:     r,
-				Mirrors:  mirrors,
-				Secure:   isSecureIndex(config, r),
-				Official: r == IndexName,
-			}
+	var mirrors []string
+	if config.IndexConfigs[DefaultRegistry] == nil {
+		// Use mirrors only with official index
+		if DefaultRegistry == IndexName {
+			mirrors = config.Mirrors
+		} else {
+			mirrors = make([]string, 0)
+		}
+		config.IndexConfigs[DefaultRegistry] = &registrytypes.IndexInfo{
+			Name:     DefaultRegistry,
+			Mirrors:  mirrors,
+			Secure:   isSecureIndex(config, DefaultRegistry),
+			Official: DefaultRegistry == IndexName,
 		}
 	}
 
@@ -369,14 +379,12 @@ func ValidateIndexName(val string) (string, error) {
 	if val == "index.docker.io" {
 		val = "docker.io"
 	}
-	for _, r := range DefaultRegistries {
-		if val == r {
-			break
-		}
-		if val == "index."+r {
-			val = r
+	if val != DefaultRegistry {
+		if val == "index."+DefaultRegistry {
+			val = DefaultRegistry
 		}
 	}
+
 	if strings.HasPrefix(val, "-") || strings.HasSuffix(val, "-") {
 		return "", fmt.Errorf("invalid index name (%s). Cannot begin or end with a hyphen", val)
 	}

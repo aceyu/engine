@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/docker/distribution/reference"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -124,11 +125,10 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 		}()
 	}
 
-	newDefaultRegistries := []string{}
-	for _, r := range cli.AdditionalRegistries {
-		newDefaultRegistries = append(newDefaultRegistries, r)
+	if cli.DefaultRegistry != "" {
+		registry.SetDefaultRegistry(cli.DefaultRegistry)
+		reference.DefaultDomain = cli.DefaultRegistry
 	}
-	registry.DefaultRegistries = append(newDefaultRegistries, registry.DefaultRegistries...)
 
 	serverConfig, err := newAPIServerConfig(cli)
 	if err != nil {

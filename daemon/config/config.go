@@ -199,7 +199,7 @@ type CommonConfig struct {
 	// not starting it ourselves
 	ContainerdAddr string `json:"containerd,omitempty"`
 
-	AdditionalRegistries []string `json:"add-registry,omitempty"`
+	DefaultRegistry string `json:"default-registry,omitempty"`
 }
 
 // IsValueSet returns true if a configuration value

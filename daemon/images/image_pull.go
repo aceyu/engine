@@ -2,19 +2,18 @@ package images // import "github.com/docker/docker/daemon/images"
 
 import (
 	"context"
-	"github.com/sirupsen/logrus"
 	"io"
 	"strings"
 	"time"
 
 	dist "github.com/docker/distribution"
+	refstore "github.com/docker/docker/reference"
 	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/distribution"
 	progressutils "github.com/docker/docker/distribution/utils"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/progress"
-	refstore "github.com/docker/docker/reference"
 	"github.com/docker/docker/registry"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -28,12 +27,12 @@ func (i *ImageService) PullImage(ctx context.Context, image, tag string, platfor
 	// trailing :. This is ugly, but let's not break API
 	// compatibility.
 	image = strings.TrimSuffix(image, ":")
-	logrus.Debugf("image_pull.go, image=%s, tag=%s",image, tag)
-	ref, err := refstore.ParseNormalizedNamed(image)
+
+	//ref, err := reference.ParseNormalizedNamed(image)
+	ref, err := refstore.ParseNamed(image)
 	if err != nil {
 		return errdefs.InvalidParameter(err)
 	}
-	logrus.Debugf("image_pull.go,ref name=%s, string=%s",ref.Name(), ref.String())
 
 	if tag != "" {
 		// The "tag" could actually be a digest.
@@ -98,7 +97,7 @@ func (i *ImageService) GetRepository(ctx context.Context, ref reference.Named, a
 		return nil, false, err
 	}
 	// makes sure name is not empty or `scratch`
-	if err := distribution.ValidateRepoName(repoInfo.Name.Name()); err != nil {
+	if err := distribution.ValidateRepoName(repoInfo.Name); err != nil {
 		return nil, false, errdefs.InvalidParameter(err)
 	}
 

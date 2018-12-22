@@ -3,7 +3,6 @@ package distribution // import "github.com/docker/docker/distribution"
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api"
@@ -13,6 +12,7 @@ import (
 	"github.com/docker/docker/registry"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -56,33 +56,25 @@ func Pull(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullCo
 	// Unless the index name is specified, iterate over all registries until
 	// the matching image is found.
 	if refstore.IsReferenceFullyQualified(ref) {
-		logrus.Debug("pull.go IsReferenceFullyQualified")
 		return pullFromRegistry(ctx, ref, imagePullConfig)
 	}
-	// TODO(runcom): this should be moved before the check above for consistency...
-	if len(registry.DefaultRegistries) == 0 {
-		return fmt.Errorf("No configured registry to pull from.")
-	}
-	err := ValidateRepoName(ref.Name())
+	err := ValidateRepoName(ref)
 	if err != nil {
 		return err
 	}
-	for i, r := range registry.DefaultRegistries {
-		logrus.Debugf("pull.go, i=%d, len=%d", i, len(registry.DefaultRegistries))
+	for i, r := range registry.QueryRegistries() {
 		// Prepend the index name to the image name.
 		fqr, err := refstore.QualifyUnqualifiedReference(ref, r)
-		logrus.Debugf("pull.go, name=%s, string=%s", fqr.Name(), fqr.String())
 		if err != nil {
 			errStr := fmt.Sprintf("Failed to fully qualify %q name with %q registry: %v", ref.Name(), r, err)
-			if i == len(registry.DefaultRegistries)-1 {
+			if i == len(registry.QueryRegistries())-1 {
 				return fmt.Errorf(errStr)
 			}
 			continue
 		}
 		if err := pullFromRegistry(ctx, fqr, imagePullConfig); err != nil {
 			// make sure we get a final "Error response from daemon: "
-			logrus.Debugf("pull.go2, i=%d, len=%d", i, len(registry.DefaultRegistries))
-			if i == len(registry.DefaultRegistries)-1 {
+			if i == len(registry.QueryRegistries())-1 {
 				return err
 			}
 		} else {
@@ -103,7 +95,7 @@ func pullFromRegistry(ctx context.Context, ref reference.Named, imagePullConfig 
 	}
 
 	// makes sure name is not `scratch`
-	if err := ValidateRepoName(repoInfo.Name.Name()); err != nil {
+	if err := ValidateRepoName(repoInfo.Name); err != nil {
 		return err
 	}
 
@@ -218,18 +210,9 @@ func writeStatus(requestedTag string, out progress.Output, layersDownloaded bool
 }
 
 // ValidateRepoName validates the name of a repository.
-// func ValidateRepoName(name reference.Named) error {
-// 	if reference.FamiliarName(name) == api.NoBaseImageSpecifier {
-// 		return errors.WithStack(reservedNameError(api.NoBaseImageSpecifier))
-// 	}
-// 	return nil
-// }
-func ValidateRepoName(name string) error {
-	if name == "" {
-		return fmt.Errorf("Repository name can't be empty")
-	}
-	if strings.TrimPrefix(name, registry.IndexName+"/") == api.NoBaseImageSpecifier {
-		return fmt.Errorf("'%s' is a reserved name", api.NoBaseImageSpecifier)
+func ValidateRepoName(name reference.Named) error {
+	if reference.FamiliarName(name) == api.NoBaseImageSpecifier {
+		return errors.WithStack(reservedNameError(api.NoBaseImageSpecifier))
 	}
 	return nil
 }

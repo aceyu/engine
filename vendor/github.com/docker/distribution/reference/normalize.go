@@ -11,7 +11,8 @@ import (
 
 var (
 	legacyDefaultDomain = "index.docker.io"
-	defaultDomain       = "docker.io"
+	DefaultDomain       = "docker.io"
+	dockerioDomain      = "docker.io"
 	officialRepoName    = "library"
 	defaultTag          = "latest"
 )
@@ -62,14 +63,14 @@ func ParseNormalizedNamed(s string) (Named, error) {
 func splitDockerDomain(name string) (domain, remainder string) {
 	i := strings.IndexRune(name, '/')
 	if i == -1 || (!strings.ContainsAny(name[:i], ".:") && name[:i] != "localhost") {
-		domain, remainder = defaultDomain, name
+		domain, remainder = DefaultDomain, name
 	} else {
 		domain, remainder = name[:i], name[i+1:]
 	}
 	if domain == legacyDefaultDomain {
-		domain = defaultDomain
+		domain = DefaultDomain
 	}
-	if domain == defaultDomain && !strings.ContainsRune(remainder, '/') {
+	if domain == DefaultDomain && !strings.ContainsRune(remainder, '/') {
 		remainder = officialRepoName + "/" + remainder
 	}
 	return
@@ -87,7 +88,7 @@ func familiarizeName(named namedRepository) repository {
 		path:   named.Path(),
 	}
 
-	if repo.domain == defaultDomain {
+	if repo.domain == DefaultDomain || repo.domain == dockerioDomain {
 		repo.domain = ""
 		// Handle official repositories which have the pattern "library/<official repo name>"
 		if split := strings.Split(repo.path, "/"); len(split) == 2 && split[0] == officialRepoName {
