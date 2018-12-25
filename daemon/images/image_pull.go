@@ -2,12 +2,13 @@ package images // import "github.com/docker/docker/daemon/images"
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
 
 	dist "github.com/docker/distribution"
-	refstore "github.com/docker/docker/reference"
 	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/distribution"
@@ -29,7 +30,7 @@ func (i *ImageService) PullImage(ctx context.Context, image, tag string, platfor
 	image = strings.TrimSuffix(image, ":")
 
 	//ref, err := reference.ParseNormalizedNamed(image)
-	ref, err := refstore.ParseNamed(image)
+	ref, err := ParseNamed(image)
 	if err != nil {
 		return errdefs.InvalidParameter(err)
 	}
@@ -125,4 +126,48 @@ func (i *ImageService) GetRepository(ctx context.Context, ref reference.Named, a
 		}
 	}
 	return repository, confirmedV2, lastError
+}
+
+func ParseNamed(s string) (reference.Named, error) {
+
+	domain, remainder := splitDockerDomain(s)
+
+	var remoteName string
+	if tagSep := strings.IndexRune(remainder, ':'); tagSep > -1 {
+		remoteName = remainder[:tagSep]
+	} else {
+		remoteName = remainder
+	}
+	if strings.ToLower(remoteName) != remoteName {
+		return nil, errors.New("invalid reference format: repository name must be lowercase")
+	}
+	sn :=""
+	if domain == "" {
+		sn = remainder
+	} else {
+		sn = domain + "/" + remainder
+	}
+	ref, err := reference.Parse(sn)
+	if err != nil {
+		return nil, err
+	}
+	named, isNamed := ref.(reference.Named)
+	if !isNamed {
+		return nil, fmt.Errorf("reference %s has no name", ref.String())
+	}
+	return named, nil
+}
+
+func splitDockerDomain(name string) (domain, remainder string) {
+	i := strings.IndexRune(name, '/')
+	if i == -1 || (!strings.ContainsAny(name[:i], ".:") && name[:i] != "localhost") {
+		domain, remainder = "", name
+	} else {
+		domain, remainder = name[:i], name[i+1:]
+	}
+	if (domain == registry.DefaultNamespace || domain == registry.DefaultRegistry || domain=="") && !strings.ContainsRune(remainder, '/') {
+		remainder = "library/" + remainder
+		return
+	}
+	return
 }

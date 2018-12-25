@@ -76,7 +76,7 @@ func SetDefaultRegistry(defaultRegistry string) {
 	if DefaultRegistry == DefaultNamespace {
 		queryRegisties = append(queryRegisties, DefaultNamespace)
 	} else {
-		queryRegisties = append(queryRegisties, DefaultRegistry , DefaultNamespace)
+		queryRegisties = append(queryRegisties, DefaultRegistry, DefaultNamespace)
 	}
 }
 
@@ -457,12 +457,28 @@ func GetAuthConfigKey(index *registrytypes.IndexInfo) string {
 
 // newRepositoryInfo validates and breaks down a repository name into a RepositoryInfo
 func newRepositoryInfo(config *serviceConfig, name reference.Named) (*RepositoryInfo, error) {
-	index, err := newIndexInfo(config, reference.Domain(name))
+	indexName := reference.Domain(name)
+	if indexName == "" || (indexName == DefaultNamespace && DefaultRegistry != indexName) {
+		indexName = IndexServerName()
+		if indexName == "" {
+			return nil, fmt.Errorf("No default registry configured.")
+		}
+		fqr, err := reference.QualifyUnqualifiedReference(name, indexName)
+		if err != nil {
+			return nil, err
+		}
+		name = fqr
+	}
+	//index, err := newIndexInfo(config, reference.Domain(name))
+	index, err := newIndexInfo(config, indexName)
 	if err != nil {
 		return nil, err
 	}
 	official := !strings.ContainsRune(reference.FamiliarName(name), '/')
 
+	if DefaultRegistry != DefaultNamespace {
+		official = false
+	}
 	return &RepositoryInfo{
 		Name:     reference.TrimNamed(name),
 		Index:    index,

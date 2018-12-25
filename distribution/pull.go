@@ -55,7 +55,7 @@ func newPuller(endpoint registry.APIEndpoint, repoInfo *registry.RepositoryInfo,
 func Pull(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullConfig) error {
 	// Unless the index name is specified, iterate over all registries until
 	// the matching image is found.
-	if refstore.IsReferenceFullyQualified(ref) {
+	if reference.IsReferenceFullyQualified(ref) {
 		return pullFromRegistry(ctx, ref, imagePullConfig)
 	}
 	err := ValidateRepoName(ref)
@@ -64,7 +64,7 @@ func Pull(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullCo
 	}
 	for i, r := range registry.QueryRegistries() {
 		// Prepend the index name to the image name.
-		fqr, err := refstore.QualifyUnqualifiedReference(ref, r)
+		fqr, err := reference.QualifyUnqualifiedReference(ref, r)
 		if err != nil {
 			errStr := fmt.Sprintf("Failed to fully qualify %q name with %q registry: %v", ref.Name(), r, err)
 			if i == len(registry.QueryRegistries())-1 {
