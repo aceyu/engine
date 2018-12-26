@@ -3,7 +3,6 @@ package reference // import "github.com/docker/docker/reference"
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"os"
 	"path/filepath"
 	"sort"
@@ -220,7 +219,6 @@ func (store *store) Delete(ref reference.Named) (bool, error) {
 
 // Get retrieves an item from the store by reference
 func (store *store) Get(ref reference.Named) (digest.Digest, error) {
-	logrus.Debugf("Repositories=%v", store.Repositories)
 	if canonical, ok := ref.(reference.Canonical); ok {
 		// If reference contains both tag and digest, only
 		// lookup by digest as it takes precedence over

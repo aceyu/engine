@@ -9,9 +9,6 @@ import (
 
 func (s *DefaultService) lookupV2Endpoints(hostname string) (endpoints []APIEndpoint, err error) {
 	tlsConfig := tlsconfig.ServerDefault()
-	if err != nil {
-		return nil, err
-	}
 	if hostname == DefaultNamespace || hostname == IndexHostname {
 		// v2 mirrors
 		for _, mirror := range s.config.Mirrors {

@@ -476,7 +476,7 @@ func newRepositoryInfo(config *serviceConfig, name reference.Named) (*Repository
 	}
 	official := !strings.ContainsRune(reference.FamiliarName(name), '/')
 
-	if DefaultRegistry != DefaultNamespace {
+	if indexName != DefaultNamespace {
 		official = false
 	}
 	return &RepositoryInfo{

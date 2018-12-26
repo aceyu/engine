@@ -37,39 +37,20 @@ func NewTransport(base http.RoundTripper, modifiers ...RequestModifier) http.Rou
 	}
 }
 
-func NewTransportAndBasicAuth(base http.RoundTripper, username, password string, modifiers ...RequestModifier) http.RoundTripper {
-	return &transport{
-		Modifiers: modifiers,
-		Base:      base,
-		username:  username,
-		password:  password,
-	}
-}
-
 // transport is an http.RoundTripper that makes HTTP requests after
 // copying and modifying the request
 type transport struct {
 	Modifiers []RequestModifier
 	Base      http.RoundTripper
 
-	mu       sync.Mutex                      // guards modReq
-	modReq   map[*http.Request]*http.Request // original -> modified
-	username string
-	password string
+	mu     sync.Mutex                      // guards modReq
+	modReq map[*http.Request]*http.Request // original -> modified
 }
 
 // RoundTrip authorizes and authenticates the request with an
 // access token. If no token exists or token is expired,
 // tries to refresh/fetch a new token.
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if _, ok := req.Header["Referer"]; ok {
-		if _, ok2 := req.Header["Authorization"]; !ok2 {
-			if t.username != "" && t.password != "" {
-				req.SetBasicAuth(t.username, t.password)
-			}
-		}
-	}
-
 	req2 := cloneRequest(req)
 	for _, modifier := range t.Modifiers {
 		if err := modifier.ModifyRequest(req2); err != nil {
