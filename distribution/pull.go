@@ -49,45 +49,9 @@ func newPuller(endpoint registry.APIEndpoint, repoInfo *registry.RepositoryInfo,
 	return nil, fmt.Errorf("unknown version %d for registry %s", endpoint.Version, endpoint.URL)
 }
 
-// Pull initiates a pull operation for given reference. If the reference is
-// fully qualified, image will be pulled from given registry. Otherwise
-// additional registries will be queried until the reference is found.
-func Pull(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullConfig) error {
-	// Unless the index name is specified, iterate over all registries until
-	// the matching image is found.
-	if reference.IsReferenceFullyQualified(ref) {
-		return pullFromRegistry(ctx, ref, imagePullConfig)
-	}
-	err := ValidateRepoName(ref)
-	if err != nil {
-		return err
-	}
-	for i, r := range registry.QueryRegistries() {
-		// Prepend the index name to the image name.
-		fqr, err := reference.QualifyUnqualifiedReference(ref, r)
-		if err != nil {
-			errStr := fmt.Sprintf("Failed to fully qualify %q name with %q registry: %v", ref.Name(), r, err)
-			if i == len(registry.QueryRegistries())-1 {
-				return fmt.Errorf(errStr)
-			}
-			continue
-		}
-		if err := pullFromRegistry(ctx, fqr, imagePullConfig); err != nil {
-			// make sure we get a final "Error response from daemon: "
-			if i == len(registry.QueryRegistries())-1 {
-				return err
-			}
-		} else {
-			return nil
-		}
-	}
-
-	return nil
-}
-
 // Pull initiates a pull operation. image is the repository name to pull, and
 // tag may be either empty, or indicate a specific tag to pull.
-func pullFromRegistry(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullConfig) error {
+func Pull(ctx context.Context, ref reference.Named, imagePullConfig *ImagePullConfig) error {
 	// Resolve the Repository name from fqn to RepositoryInfo
 	repoInfo, err := imagePullConfig.RegistryService.ResolveRepository(ref)
 	if err != nil {

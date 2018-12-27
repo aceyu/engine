@@ -69,21 +69,11 @@ var lookupIP = net.LookupIP
 
 var DefaultRegistry = DefaultNamespace
 
-var queryRegisties = []string{}
-
 func SetDefaultRegistry(defaultRegistry string) {
 	DefaultRegistry = defaultRegistry
-	if DefaultRegistry == DefaultNamespace {
-		queryRegisties = append(queryRegisties, DefaultNamespace)
-	} else {
-		queryRegisties = append(queryRegisties, DefaultRegistry, DefaultNamespace)
-	}
 }
 
-func QueryRegistries() []string {
-	return queryRegisties
-}
-
+// IndexServerName returns the name of default index server.
 func IndexServerName() string {
 	return DefaultRegistry
 }
@@ -259,19 +249,20 @@ skip:
 		}
 	}
 
-	var mirrors []string
-	if config.IndexConfigs[DefaultRegistry] == nil {
-		// Use mirrors only with official index
-		if DefaultRegistry == IndexName {
-			mirrors = config.Mirrors
-		} else {
-			mirrors = make([]string, 0)
+	if DefaultNamespace == DefaultRegistry {
+		// Configure public registry.
+		config.IndexConfigs[IndexName] = &registrytypes.IndexInfo{
+			Name:     IndexName,
+			Mirrors:  config.Mirrors,
+			Secure:   true,
+			Official: true,
 		}
+	} else {
 		config.IndexConfigs[DefaultRegistry] = &registrytypes.IndexInfo{
 			Name:     DefaultRegistry,
-			Mirrors:  mirrors,
+			Mirrors:  config.Mirrors,
 			Secure:   isSecureIndex(config, DefaultRegistry),
-			Official: DefaultRegistry == IndexName,
+			Official: false,
 		}
 	}
 
@@ -379,12 +370,6 @@ func ValidateIndexName(val string) (string, error) {
 	if val == "index.docker.io" {
 		val = "docker.io"
 	}
-	if val != DefaultRegistry {
-		if val == "index."+DefaultRegistry {
-			val = DefaultRegistry
-		}
-	}
-
 	if strings.HasPrefix(val, "-") || strings.HasSuffix(val, "-") {
 		return "", fmt.Errorf("invalid index name (%s). Cannot begin or end with a hyphen", val)
 	}
@@ -457,28 +442,12 @@ func GetAuthConfigKey(index *registrytypes.IndexInfo) string {
 
 // newRepositoryInfo validates and breaks down a repository name into a RepositoryInfo
 func newRepositoryInfo(config *serviceConfig, name reference.Named) (*RepositoryInfo, error) {
-	indexName := reference.Domain(name)
-	if indexName == "" || (indexName == DefaultNamespace && DefaultRegistry != indexName) {
-		indexName = IndexServerName()
-		if indexName == "" {
-			return nil, fmt.Errorf("No default registry configured.")
-		}
-		fqr, err := reference.QualifyUnqualifiedReference(name, indexName)
-		if err != nil {
-			return nil, err
-		}
-		name = fqr
-	}
-	//index, err := newIndexInfo(config, reference.Domain(name))
-	index, err := newIndexInfo(config, indexName)
+	index, err := newIndexInfo(config, reference.Domain(name))
 	if err != nil {
 		return nil, err
 	}
 	official := !strings.ContainsRune(reference.FamiliarName(name), '/')
 
-	if indexName != DefaultNamespace {
-		official = false
-	}
 	return &RepositoryInfo{
 		Name:     reference.TrimNamed(name),
 		Index:    index,
@@ -494,7 +463,7 @@ func ParseRepositoryInfo(reposName reference.Named) (*RepositoryInfo, error) {
 
 // ParseSearchIndexInfo will use repository name to get back an indexInfo.
 func ParseSearchIndexInfo(reposName string) (*registrytypes.IndexInfo, error) {
-	indexName, _ := splitReposSearchTerm(reposName, true)
+	indexName, _ := splitReposSearchTerm(reposName)
 
 	indexInfo, err := newIndexInfo(emptyServiceConfig, indexName)
 	if err != nil {

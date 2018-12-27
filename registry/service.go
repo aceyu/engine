@@ -3,10 +3,8 @@ package registry // import "github.com/docker/docker/registry"
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 
@@ -30,7 +28,7 @@ type Service interface {
 	LookupPullEndpoints(hostname string) (endpoints []APIEndpoint, err error)
 	LookupPushEndpoints(hostname string) (endpoints []APIEndpoint, err error)
 	ResolveRepository(name reference.Named) (*RepositoryInfo, error)
-	Search(ctx context.Context, term string, limit int, authConfig *types.AuthConfig, userAgent string, headers map[string][]string, noIndex bool) ([]registrytypes.SearchResultExt, error)
+	Search(ctx context.Context, term string, limit int, authConfig *types.AuthConfig, userAgent string, headers map[string][]string) (*registrytypes.SearchResults, error)
 	ServiceConfig() *registrytypes.ServiceConfig
 	TLSConfig(hostname string) (*tls.Config, error)
 	LoadAllowNondistributableArtifacts([]string) error
@@ -110,13 +108,9 @@ func (s *DefaultService) LoadInsecureRegistries(registries []string) error {
 // It can be used to verify the validity of a client's credentials.
 func (s *DefaultService) Auth(ctx context.Context, authConfig *types.AuthConfig, userAgent string) (status, token string, err error) {
 	// TODO Use ctx when searching for repositories
-
 	serverAddress := authConfig.ServerAddress
 	if serverAddress == "" {
 		serverAddress = IndexServerAddress()
-	}
-	if serverAddress == "" {
-		return "", "", fmt.Errorf("No configured registry to authenticate to.")
 	}
 	if !strings.HasPrefix(serverAddress, "https://") && !strings.HasPrefix(serverAddress, "http://") {
 		serverAddress = "https://" + serverAddress
@@ -153,46 +147,15 @@ func (s *DefaultService) Auth(ctx context.Context, authConfig *types.AuthConfig,
 	return "", "", err
 }
 
-type by func(fst, snd *registrytypes.SearchResultExt) bool
-
-type searchResultSorter struct {
-	Results []registrytypes.SearchResultExt
-	By      func(fst, snd *registrytypes.SearchResultExt) bool
-}
-
-func (by by) Sort(results []registrytypes.SearchResultExt) {
-	rs := &searchResultSorter{
-		Results: results,
-		By:      by,
-	}
-	sort.Sort(rs)
-}
-
-func (s *searchResultSorter) Len() int {
-	return len(s.Results)
-}
-
-func (s *searchResultSorter) Swap(i, j int) {
-	s.Results[i], s.Results[j] = s.Results[j], s.Results[i]
-}
-
-func (s *searchResultSorter) Less(i, j int) bool {
-	return s.By(&s.Results[i], &s.Results[j])
-}
-
 // splitReposSearchTerm breaks a search term into an index name and remote name
-func splitReposSearchTerm(reposName string, fixMissingIndex bool) (string, string) {
+func splitReposSearchTerm(reposName string) (string, string) {
 	nameParts := strings.SplitN(reposName, "/", 2)
 	var indexName, remoteName string
 	if len(nameParts) == 1 || (!strings.Contains(nameParts[0], ".") &&
 		!strings.Contains(nameParts[0], ":") && nameParts[0] != "localhost") {
 		// This is a Docker Index repos (ex: samalba/hipache or ubuntu)
 		// 'docker.io'
-		if fixMissingIndex {
-			indexName = IndexServerName()
-		} else {
-			indexName = ""
-		}
+		indexName = IndexName
 		remoteName = reposName
 	} else {
 		indexName = nameParts[0]
@@ -201,94 +164,15 @@ func splitReposSearchTerm(reposName string, fixMissingIndex bool) (string, strin
 	return indexName, remoteName
 }
 
-func (s *DefaultService) Search(ctx context.Context, term string, limit int, authConfig *types.AuthConfig, userAgent string, headers map[string][]string, noIndex bool) ([]registrytypes.SearchResultExt, error) {
-	results := []registrytypes.SearchResultExt{}
-	cmpFunc := getSearchResultsCmpFunc(!noIndex)
-
-	// helper for concurrent queries
-	searchRoutine := func(term string, c chan<- error) {
-		err := s.searchTerm(term, limit, authConfig, userAgent, headers, &results)
-		c <- err
-	}
-	if isReposSearchTermFullyQualified(term) {
-		if err := s.searchTerm(term, limit, authConfig, userAgent, headers, &results); err != nil {
-			return nil, err
-		}
-	} else if len(QueryRegistries()) < 1 {
-		return nil, fmt.Errorf("No configured repository to search.")
-	} else {
-		var (
-			err              error
-			successfulSearch = false
-			resultChan       = make(chan error)
-		)
-		// query all registries in parallel
-		for i, r := range QueryRegistries() {
-			tmp := term
-			if i > 0 {
-				tmp = fmt.Sprintf("%s/%s", r, term)
-			}
-			go searchRoutine(tmp, resultChan)
-		}
-		for range QueryRegistries() {
-			err = <-resultChan
-			if err == nil {
-				successfulSearch = true
-			} else {
-				logrus.Errorf("%s", err.Error())
-			}
-		}
-		if !successfulSearch {
-			return nil, err
-		}
-	}
-	by(cmpFunc).Sort(results)
-	if noIndex {
-		results = removeSearchDuplicates(results)
-	}
-	return results, nil
-}
-
-// Factory for search result comparison function. Either it takes index name
-// into consideration or not.
-func getSearchResultsCmpFunc(withIndex bool) by {
-	// Compare two items in the result table of search command. First compare
-	// the index we found the result in. Second compare their rating. Then
-	// compare their fully qualified name (registry/name).
-	less := func(fst, snd *registrytypes.SearchResultExt) bool {
-		if withIndex {
-			if fst.IndexName != snd.IndexName {
-				return fst.IndexName < snd.IndexName
-			}
-			if fst.StarCount != snd.StarCount {
-				return fst.StarCount > snd.StarCount
-			}
-		}
-		if fst.RegistryName != snd.RegistryName {
-			return fst.RegistryName < snd.RegistryName
-		}
-		if !withIndex {
-			if fst.StarCount != snd.StarCount {
-				return fst.StarCount > snd.StarCount
-			}
-		}
-		if fst.Name != snd.Name {
-			return fst.Name < snd.Name
-		}
-		return fst.Description < snd.Description
-	}
-	return less
-}
-
 // Search queries the public registry for images matching the specified
 // search terms, and returns the results.
-func (s *DefaultService) searchTerm(term string, limit int, authConfig *types.AuthConfig, userAgent string, headers map[string][]string, outs *[]registrytypes.SearchResultExt) error {
+func (s *DefaultService) Search(ctx context.Context, term string, limit int, authConfig *types.AuthConfig, userAgent string, headers map[string][]string) (*registrytypes.SearchResults, error) {
 	// TODO Use ctx when searching for repositories
 	if err := validateNoScheme(term); err != nil {
-		return err
+		return nil, err
 	}
 
-	indexName, remoteName := splitReposSearchTerm(term, true)
+	indexName, remoteName := splitReposSearchTerm(term)
 
 	// Search is a long-running operation, just lock s.config to avoid block others.
 	s.mu.Lock()
@@ -296,13 +180,13 @@ func (s *DefaultService) searchTerm(term string, limit int, authConfig *types.Au
 	s.mu.Unlock()
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// *TODO: Search multiple indexes.
 	endpoint, err := NewV1Endpoint(index, userAgent, http.Header(headers))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var client *http.Client
@@ -321,7 +205,7 @@ func (s *DefaultService) searchTerm(term string, limit int, authConfig *types.Au
 			if fErr, ok := err.(fallbackError); ok {
 				logrus.Errorf("Cannot use identity token for search, v2 auth not supported: %v", fErr.err)
 			} else {
-				return err
+				return nil, err
 			}
 		} else if foundV2 {
 			// Copy non transport http client features
@@ -337,13 +221,12 @@ func (s *DefaultService) searchTerm(term string, limit int, authConfig *types.Au
 	if client == nil {
 		client = endpoint.client
 		if err := authorizeClient(client, authConfig, endpoint); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	r := newSession(client, authConfig, endpoint)
 
-	var results *registrytypes.SearchResults
 	if index.Official {
 		localName := remoteName
 		if strings.HasPrefix(localName, "library/") {
@@ -351,84 +234,9 @@ func (s *DefaultService) searchTerm(term string, limit int, authConfig *types.Au
 			localName = strings.SplitN(localName, "/", 2)[1]
 		}
 
-		results, err = r.SearchRepositories(localName, limit)
-	} else {
-		results, err = r.SearchRepositories(remoteName, limit)
+		return r.SearchRepositories(localName, limit)
 	}
-	if err != nil || results.NumResults < 1 {
-		return err
-	}
-
-	newOuts := make([]registrytypes.SearchResultExt, len(*outs)+len(results.Results))
-	for i := range *outs {
-		newOuts[i] = (*outs)[i]
-	}
-	for i, result := range results.Results {
-		item := registrytypes.SearchResultExt{
-			IndexName:    index.Name,
-			RegistryName: index.Name,
-			StarCount:    result.StarCount,
-			Name:         result.Name,
-			IsOfficial:   result.IsOfficial,
-			IsAutomated:  result.IsAutomated,
-			Description:  result.Description,
-		}
-		// Check if search result is fully qualified with registry
-		// If not, assume REGISTRY = INDEX
-		newRegistryName, newName := splitReposSearchTerm(result.Name, false)
-		if newRegistryName != "" {
-			item.RegistryName, item.Name = newRegistryName, newName
-		}
-		newOuts[len(*outs)+i] = item
-	}
-	*outs = newOuts
-	return nil
-}
-
-// Duplicate entries may occur in result table when omitting index from output because
-// different indexes may refer to same registries.
-func removeSearchDuplicates(data []registrytypes.SearchResultExt) []registrytypes.SearchResultExt {
-	var (
-		prevIndex = 0
-		res       []registrytypes.SearchResultExt
-	)
-
-	if len(data) > 0 {
-		res = []registrytypes.SearchResultExt{data[0]}
-	}
-	for i := 1; i < len(data); i++ {
-		prev := res[prevIndex]
-		curr := data[i]
-		if prev.RegistryName == curr.RegistryName && prev.Name == curr.Name {
-			// Repositories are equal, delete one of them.
-			// Find out whose index has higher priority (the lower the number
-			// the higher the priority).
-			var prioPrev, prioCurr int
-			for prioPrev = 0; prioPrev < len(QueryRegistries()); prioPrev++ {
-				if prev.IndexName == QueryRegistries()[prioPrev] {
-					break
-				}
-			}
-			for prioCurr = 0; prioCurr < len(QueryRegistries()); prioCurr++ {
-				if curr.IndexName == QueryRegistries()[prioCurr] {
-					break
-				}
-			}
-			if prioPrev > prioCurr || (prioPrev == prioCurr && prev.StarCount < curr.StarCount) {
-				// replace previous entry with current one
-				res[prevIndex] = curr
-			} // otherwise keep previous entry
-		} else {
-			prevIndex++
-			res = append(res, curr)
-		}
-	}
-	return res
-}
-
-func isReposSearchTermFullyQualified(term string) bool {
-	indexName, _ := splitReposSearchTerm(term, false)
-	return indexName != ""
+	return r.SearchRepositories(remoteName, limit)
 }
 
 // ResolveRepository splits a repository name into its components

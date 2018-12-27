@@ -299,11 +299,11 @@ func (s *imageRouter) getImagesSearch(ctx context.Context, w http.ResponseWriter
 		}
 		limit = limitValue
 	}
-	query, err := s.backend.SearchRegistryForImages(ctx, r.Form.Get("filters"), r.Form.Get("term"), limit, config, headers, httputils.BoolValue(r, "noIndex"))
+	query, err := s.backend.SearchRegistryForImages(ctx, r.Form.Get("filters"), r.Form.Get("term"), limit, config, headers)
 	if err != nil {
 		return err
 	}
-	return httputils.WriteJSON(w, http.StatusOK, query)
+	return httputils.WriteJSON(w, http.StatusOK, query.Results)
 }
 
 func (s *imageRouter) postImagesPrune(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {

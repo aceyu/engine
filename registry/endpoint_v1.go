@@ -146,7 +146,7 @@ func (e *V1Endpoint) Path(path string) string {
 func (e *V1Endpoint) Ping() (PingResult, error) {
 	logrus.Debugf("attempting v1 ping for registry endpoint %s", e)
 
-	if e.String() == IndexServer {
+	if e.String() == IndexServerAddress() {
 		// Skip the check, we know this one is valid
 		// (and we never want to fallback to http in case of error)
 		return PingResult{Standalone: false}, nil

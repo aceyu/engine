@@ -125,8 +125,10 @@ func (err fallbackError) Error() string {
 // will be used to authenticate against the registry to validate credentials.
 func loginV2(authConfig *types.AuthConfig, endpoint APIEndpoint, userAgent string) (string, string, error) {
 	logrus.Debugf("attempting v2 login to registry endpoint %s", strings.TrimRight(endpoint.URL.String(), "/")+"/v2/")
+
 	modifiers := Headers(userAgent, nil)
 	authTransport := transport.NewTransport(NewTransport(endpoint.TLSConfig), modifiers...)
+
 	credentialAuthConfig := *authConfig
 	creds := loginCredentialStore{
 		authConfig: &credentialAuthConfig,
