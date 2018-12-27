@@ -79,6 +79,7 @@ func installCommonConfigFlags(conf *config.Config, flags *pflag.FlagSet) {
 	flags.MarkHidden("deprecated-key-path")
 
 	flags.Var(opts.NewQuotedString(&conf.DefaultRegistry), "default-registry", "Registry to query before a public one")
+	flags.Var(opts.NewQuotedString(&conf.DefaultInsecureRegistry), "default-insecure-registry", "Registry to query before a public one")
 	conf.MaxConcurrentDownloads = &maxConcurrentDownloads
 	conf.MaxConcurrentUploads = &maxConcurrentUploads
 }

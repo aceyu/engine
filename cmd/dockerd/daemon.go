@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/docker/distribution/reference"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/docker/distribution/reference"
 
 	"github.com/docker/distribution/uuid"
 	"github.com/docker/docker/api"
@@ -124,9 +125,11 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 			}
 		}()
 	}
-
-	if cli.DefaultRegistry != "" {
-		registry.SetDefaultRegistry(cli.DefaultRegistry)
+	if cli.DefaultInsecureRegistry != "" {
+		registry.SetDefaultRegistry(cli.DefaultRegistry, true)
+		reference.DefaultDomain = cli.DefaultRegistry
+	} else if cli.DefaultRegistry != "" {
+		registry.SetDefaultRegistry(cli.DefaultRegistry, false)
 		reference.DefaultDomain = cli.DefaultRegistry
 	}
 

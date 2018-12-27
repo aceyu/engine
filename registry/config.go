@@ -68,9 +68,11 @@ var (
 var lookupIP = net.LookupIP
 
 var DefaultRegistry = DefaultNamespace
+var defaultRegistryInsecure = false
 
-func SetDefaultRegistry(defaultRegistry string) {
+func SetDefaultRegistry(defaultRegistry string, insecure bool) {
 	DefaultRegistry = defaultRegistry
+	defaultRegistryInsecure = insecure
 }
 
 // IndexServerName returns the name of default index server.
@@ -188,6 +190,9 @@ func (config *serviceConfig) LoadInsecureRegistries(registries []string) error {
 	// TODO: should we deprecate this once it is easier for people to set up a TLS registry or change
 	// daemon flags on boot2docker?
 	registries = append(registries, "127.0.0.0/8")
+	if defaultRegistryInsecure {
+		registries = append(registries, DefaultRegistry)
+	}
 
 	// Store original InsecureRegistryCIDRs and IndexConfigs
 	// Clean InsecureRegistryCIDRs and IndexConfigs in config, as passed registries has all insecure registry info.
@@ -249,23 +254,13 @@ skip:
 		}
 	}
 
-	if DefaultNamespace == DefaultRegistry {
-		// Configure public registry.
-		config.IndexConfigs[IndexName] = &registrytypes.IndexInfo{
-			Name:     IndexName,
-			Mirrors:  config.Mirrors,
-			Secure:   true,
-			Official: true,
-		}
-	} else {
-		config.IndexConfigs[DefaultRegistry] = &registrytypes.IndexInfo{
-			Name:     DefaultRegistry,
-			Mirrors:  config.Mirrors,
-			Secure:   isSecureIndex(config, DefaultRegistry),
-			Official: false,
-		}
+	// Configure public registry.
+	config.IndexConfigs[IndexName] = &registrytypes.IndexInfo{
+		Name:     IndexName,
+		Mirrors:  config.Mirrors,
+		Secure:   true,
+		Official: true,
 	}
-
 	return nil
 }
 
