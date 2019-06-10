@@ -23,12 +23,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/boltdb/bolt"
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/gc"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/pkg/errors"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -43,7 +43,7 @@ const (
 	// dbVersion represents updates to the schema
 	// version which are additions and compatible with
 	// prior version of the same schema.
-	dbVersion = 2
+	dbVersion = 3
 )
 
 // DB represents a metadata database backed by a bolt
@@ -275,7 +275,7 @@ func (m *DB) GarbageCollect(ctx context.Context) (gc.Stats, error) {
 				if idx := strings.IndexRune(n.Key, '/'); idx > 0 {
 					m.dirtySS[n.Key[:idx]] = struct{}{}
 				}
-			} else if n.Type == ResourceContent {
+			} else if n.Type == ResourceContent || n.Type == ResourceIngest {
 				m.dirtyCS = true
 			}
 			return remove(ctx, tx, n)

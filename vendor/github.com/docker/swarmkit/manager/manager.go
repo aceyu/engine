@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/docker/swarmkit/identity"
 	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/manager/allocator"
+	"github.com/docker/swarmkit/manager/allocator/cnmallocator"
 	"github.com/docker/swarmkit/manager/allocator/networkallocator"
 	"github.com/docker/swarmkit/manager/controlapi"
 	"github.com/docker/swarmkit/manager/dispatcher"
@@ -44,7 +46,6 @@ import (
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -126,6 +127,9 @@ type Config struct {
 	// first node in the cluster, this setting is used to set the cluster-wide mandatory
 	// FIPS setting.
 	FIPS bool
+
+	// NetworkConfig stores network related config for the cluster
+	NetworkConfig *cnmallocator.NetworkConfig
 }
 
 // Manager is the cluster manager for Swarm.
@@ -924,20 +928,29 @@ func (m *Manager) becomeLeader(ctx context.Context) {
 			Key:       m.config.UnlockKey,
 		}}
 	}
-
 	s.Update(func(tx store.Tx) error {
 		// Add a default cluster object to the
 		// store. Don't check the error because
 		// we expect this to fail unless this
 		// is a brand new cluster.
-		err := store.CreateCluster(tx, defaultClusterObject(
+		clusterObj := defaultClusterObject(
 			clusterID,
 			initialCAConfig,
 			raftCfg,
 			api.EncryptionConfig{AutoLockManagers: m.config.AutoLockManagers},
 			unlockKeys,
 			rootCA,
-			m.config.FIPS))
+			m.config.FIPS,
+			nil,
+			0)
+
+		// If defaultAddrPool is valid we update cluster object with new value
+		if m.config.NetworkConfig != nil && m.config.NetworkConfig.DefaultAddrPool != nil {
+			clusterObj.DefaultAddressPool = m.config.NetworkConfig.DefaultAddrPool
+			clusterObj.SubnetSize = m.config.NetworkConfig.SubnetSize
+		}
+
+		err := store.CreateCluster(tx, clusterObj)
 
 		if err != nil && err != store.ErrExist {
 			log.G(ctx).WithError(err).Errorf("error creating cluster object")
@@ -981,7 +994,20 @@ func (m *Manager) becomeLeader(ctx context.Context) {
 	// shutdown underlying manager processes when leadership is
 	// lost.
 
-	m.allocator, err = allocator.New(s, m.config.PluginGetter)
+	// If DefaultAddrPool is null, Read from store and check if
+	// DefaultAddrPool info is stored in cluster object
+	if m.config.NetworkConfig == nil || m.config.NetworkConfig.DefaultAddrPool == nil {
+		var cluster *api.Cluster
+		s.View(func(tx store.ReadTx) {
+			cluster = store.GetCluster(tx, clusterID)
+		})
+		if cluster.DefaultAddressPool != nil {
+			m.config.NetworkConfig.DefaultAddrPool = append(m.config.NetworkConfig.DefaultAddrPool, cluster.DefaultAddressPool...)
+			m.config.NetworkConfig.SubnetSize = cluster.SubnetSize
+		}
+	}
+
+	m.allocator, err = allocator.New(s, m.config.PluginGetter, m.config.NetworkConfig)
 	if err != nil {
 		log.G(ctx).WithError(err).Error("failed to create allocator")
 		// TODO(stevvooe): It doesn't seem correct here to fail
@@ -1103,7 +1129,9 @@ func defaultClusterObject(
 	encryptionConfig api.EncryptionConfig,
 	initialUnlockKeys []*api.EncryptionKey,
 	rootCA *ca.RootCA,
-	fips bool) *api.Cluster {
+	fips bool,
+	defaultAddressPool []string,
+	subnetSize uint32) *api.Cluster {
 	var caKey []byte
 	if rcaSigner, err := rootCA.Signer(); err == nil {
 		caKey = rcaSigner.Key
@@ -1134,8 +1162,10 @@ func defaultClusterObject(
 				Manager: ca.GenerateJoinToken(rootCA, fips),
 			},
 		},
-		UnlockKeys: initialUnlockKeys,
-		FIPS:       fips,
+		UnlockKeys:         initialUnlockKeys,
+		FIPS:               fips,
+		DefaultAddressPool: defaultAddressPool,
+		SubnetSize:         subnetSize,
 	}
 }
 

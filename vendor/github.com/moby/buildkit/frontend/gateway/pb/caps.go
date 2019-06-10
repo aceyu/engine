@@ -9,12 +9,15 @@ var Caps apicaps.CapList
 // considered immutable. After a capability is marked stable it should not be disabled.
 
 const (
-	CapSolveBase         apicaps.CapID = "solve.base"
-	CapSolveInlineReturn apicaps.CapID = "solve.inlinereturn"
-	CapResolveImage      apicaps.CapID = "resolveimage"
-	CapReadFile          apicaps.CapID = "readfile"
-	CapReturnResult      apicaps.CapID = "return"
-	CapReturnMap         apicaps.CapID = "returnmap"
+	CapSolveBase               apicaps.CapID = "solve.base"
+	CapSolveInlineReturn       apicaps.CapID = "solve.inlinereturn"
+	CapResolveImage            apicaps.CapID = "resolveimage"
+	CapResolveImageResolveMode apicaps.CapID = "resolveimage.resolvemode"
+	CapReadFile                apicaps.CapID = "readfile"
+	CapReturnResult            apicaps.CapID = "return"
+	CapReturnMap               apicaps.CapID = "returnmap"
+	CapReadDir                 apicaps.CapID = "readdir"
+	CapStatFile                apicaps.CapID = "statfile"
 )
 
 func init() {
@@ -41,6 +44,13 @@ func init() {
 	})
 
 	Caps.Init(apicaps.Cap{
+		ID:      CapResolveImageResolveMode,
+		Name:    "resolve remote image config with custom resolvemode",
+		Enabled: true,
+		Status:  apicaps.CapStatusExperimental,
+	})
+
+	Caps.Init(apicaps.Cap{
 		ID:      CapReadFile,
 		Name:    "read static file",
 		Enabled: true,
@@ -61,4 +71,17 @@ func init() {
 		Status:  apicaps.CapStatusExperimental,
 	})
 
+	Caps.Init(apicaps.Cap{
+		ID:      CapReadDir,
+		Name:    "read static directory",
+		Enabled: true,
+		Status:  apicaps.CapStatusExperimental,
+	})
+
+	Caps.Init(apicaps.Cap{
+		ID:      CapStatFile,
+		Name:    "stat a file",
+		Enabled: true,
+		Status:  apicaps.CapStatusExperimental,
+	})
 }

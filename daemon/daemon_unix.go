@@ -54,11 +54,11 @@ import (
 const (
 	// DefaultShimBinary is the default shim to be used by containerd if none
 	// is specified
-	DefaultShimBinary = "docker-containerd-shim"
+	DefaultShimBinary = "containerd-shim"
 
 	// DefaultRuntimeBinary is the default runtime to be used by
 	// containerd if none is specified
-	DefaultRuntimeBinary = "docker-runc"
+	DefaultRuntimeBinary = "runc"
 
 	// See https://git.kernel.org/cgit/linux/kernel/git/tip/tip.git/tree/kernel/sched/sched.h?id=8cd9234c64c584432f6992fe944ca9e46ca8ea76#n269
 	linuxMinCPUShares = 2
@@ -76,7 +76,7 @@ const (
 
 	// DefaultRuntimeName is the default runtime to be used by
 	// containerd if none is specified
-	DefaultRuntimeName = "docker-runc"
+	DefaultRuntimeName = "runc"
 )
 
 type containerGetter interface {
@@ -482,14 +482,14 @@ func verifyContainerResources(resources *containertypes.Resources, sysInfo *sysi
 	}
 	cpusAvailable, err := sysInfo.IsCpusetCpusAvailable(resources.CpusetCpus)
 	if err != nil {
-		return warnings, fmt.Errorf("Invalid value %s for cpuset cpus", resources.CpusetCpus)
+		return warnings, errors.Wrapf(err, "Invalid value %s for cpuset cpus", resources.CpusetCpus)
 	}
 	if !cpusAvailable {
 		return warnings, fmt.Errorf("Requested CPUs are not available - requested %s, available: %s", resources.CpusetCpus, sysInfo.Cpus)
 	}
 	memsAvailable, err := sysInfo.IsCpusetMemsAvailable(resources.CpusetMems)
 	if err != nil {
-		return warnings, fmt.Errorf("Invalid value %s for cpuset mems", resources.CpusetMems)
+		return warnings, errors.Wrapf(err, "Invalid value %s for cpuset mems", resources.CpusetMems)
 	}
 	if !memsAvailable {
 		return warnings, fmt.Errorf("Requested memory nodes are not available - requested %s, available: %s", resources.CpusetMems, sysInfo.Mems)
@@ -646,13 +646,13 @@ func (daemon *Daemon) initRuntimes(runtimes map[string]types.Runtime) (err error
 	os.RemoveAll(runtimeDir + "-old")
 	tmpDir, err := ioutils.TempDir(daemon.configStore.Root, "gen-runtimes")
 	if err != nil {
-		return errors.Wrapf(err, "failed to get temp dir to generate runtime scripts")
+		return errors.Wrap(err, "failed to get temp dir to generate runtime scripts")
 	}
 	defer func() {
 		if err != nil {
 			if err1 := os.RemoveAll(tmpDir); err1 != nil {
 				logrus.WithError(err1).WithField("dir", tmpDir).
-					Warnf("failed to remove tmp dir")
+					Warn("failed to remove tmp dir")
 			}
 			return
 		}
@@ -661,12 +661,12 @@ func (daemon *Daemon) initRuntimes(runtimes map[string]types.Runtime) (err error
 			return
 		}
 		if err = os.Rename(tmpDir, runtimeDir); err != nil {
-			err = errors.Wrapf(err, "failed to setup runtimes dir, new containers may not start")
+			err = errors.Wrap(err, "failed to setup runtimes dir, new containers may not start")
 			return
 		}
 		if err = os.RemoveAll(runtimeDir + "-old"); err != nil {
 			logrus.WithError(err).WithField("dir", tmpDir).
-				Warnf("failed to remove old runtimes dir")
+				Warn("failed to remove old runtimes dir")
 		}
 	}()
 
@@ -1003,9 +1003,9 @@ func removeDefaultBridgeInterface() {
 	}
 }
 
-func setupInitLayer(idMappings *idtools.IDMappings) func(containerfs.ContainerFS) error {
+func setupInitLayer(idMapping *idtools.IdentityMapping) func(containerfs.ContainerFS) error {
 	return func(initPath containerfs.ContainerFS) error {
-		return initlayer.Setup(initPath, idMappings.RootPair())
+		return initlayer.Setup(initPath, idMapping.RootPair())
 	}
 }
 
@@ -1102,7 +1102,7 @@ func parseRemappedRoot(usergrp string) (string, string, error) {
 	return username, groupname, nil
 }
 
-func setupRemappedRoot(config *config.Config) (*idtools.IDMappings, error) {
+func setupRemappedRoot(config *config.Config) (*idtools.IdentityMapping, error) {
 	if runtime.GOOS != "linux" && config.RemappedRoot != "" {
 		return nil, fmt.Errorf("User namespaces are only supported on Linux")
 	}
@@ -1118,22 +1118,22 @@ func setupRemappedRoot(config *config.Config) (*idtools.IDMappings, error) {
 			// Cannot setup user namespaces with a 1-to-1 mapping; "--root=0:0" is a no-op
 			// effectively
 			logrus.Warn("User namespaces: root cannot be remapped with itself; user namespaces are OFF")
-			return &idtools.IDMappings{}, nil
+			return &idtools.IdentityMapping{}, nil
 		}
 		logrus.Infof("User namespaces: ID ranges will be mapped to subuid/subgid ranges of: %s:%s", username, groupname)
 		// update remapped root setting now that we have resolved them to actual names
 		config.RemappedRoot = fmt.Sprintf("%s:%s", username, groupname)
 
-		mappings, err := idtools.NewIDMappings(username, groupname)
+		mappings, err := idtools.NewIdentityMapping(username, groupname)
 		if err != nil {
-			return nil, errors.Wrapf(err, "Can't create ID mappings: %v")
+			return nil, errors.Wrap(err, "Can't create ID mappings")
 		}
 		return mappings, nil
 	}
-	return &idtools.IDMappings{}, nil
+	return &idtools.IdentityMapping{}, nil
 }
 
-func setupDaemonRoot(config *config.Config, rootDir string, rootIDs idtools.IDPair) error {
+func setupDaemonRoot(config *config.Config, rootDir string, rootIdentity idtools.Identity) error {
 	config.Root = rootDir
 	// the docker root metadata directory needs to have execute permissions for all users (g+x,o+x)
 	// so that syscalls executing as non-root, operating on subdirectories of the graph root
@@ -1158,10 +1158,10 @@ func setupDaemonRoot(config *config.Config, rootDir string, rootIDs idtools.IDPa
 	// a new subdirectory with ownership set to the remapped uid/gid (so as to allow
 	// `chdir()` to work for containers namespaced to that uid/gid)
 	if config.RemappedRoot != "" {
-		config.Root = filepath.Join(rootDir, fmt.Sprintf("%d.%d", rootIDs.UID, rootIDs.GID))
+		config.Root = filepath.Join(rootDir, fmt.Sprintf("%d.%d", rootIdentity.UID, rootIdentity.GID))
 		logrus.Debugf("Creating user namespaced daemon root: %s", config.Root)
 		// Create the root directory if it doesn't exist
-		if err := idtools.MkdirAllAndChown(config.Root, 0700, rootIDs); err != nil {
+		if err := idtools.MkdirAllAndChown(config.Root, 0700, rootIdentity); err != nil {
 			return fmt.Errorf("Cannot create daemon root: %s: %v", config.Root, err)
 		}
 		// we also need to verify that any pre-existing directories in the path to
@@ -1174,7 +1174,7 @@ func setupDaemonRoot(config *config.Config, rootDir string, rootIDs idtools.IDPa
 			if dirPath == "/" {
 				break
 			}
-			if !idtools.CanAccess(dirPath, rootIDs) {
+			if !idtools.CanAccess(dirPath, rootIdentity) {
 				return fmt.Errorf("a subdirectory in your graphroot path (%s) restricts access to the remapped root uid/gid; please fix by allowing 'o+x' permissions on existing directories", config.Root)
 			}
 		}
@@ -1480,7 +1480,7 @@ func (daemon *Daemon) initCgroupsPath(path string) error {
 	// for the period and runtime as this limits what the children can be set to.
 	daemon.initCgroupsPath(filepath.Dir(path))
 
-	mnt, root, err := cgroups.FindCgroupMountpointAndRoot("cpu")
+	mnt, root, err := cgroups.FindCgroupMountpointAndRoot("", "cpu")
 	if err != nil {
 		return err
 	}

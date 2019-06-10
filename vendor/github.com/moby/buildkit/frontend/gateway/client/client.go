@@ -4,20 +4,22 @@ import (
 	"context"
 
 	"github.com/moby/buildkit/solver/pb"
+	"github.com/moby/buildkit/util/apicaps"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	fstypes "github.com/tonistiigi/fsutil/types"
 )
 
 type Client interface {
 	Solve(ctx context.Context, req SolveRequest) (*Result, error)
-	ResolveImageConfig(ctx context.Context, ref string, platform *specs.Platform) (digest.Digest, []byte, error)
+	ResolveImageConfig(ctx context.Context, ref string, opt ResolveImageConfigOpt) (digest.Digest, []byte, error)
 	BuildOpts() BuildOpts
 }
 
 type Reference interface {
 	ReadFile(ctx context.Context, req ReadRequest) ([]byte, error)
-	// StatFile(ctx context.Context, req StatRequest) (*StatResponse, error)
-	// ReadDir(ctx context.Context, req ReadDirRequest) ([]*StatResponse, error)
+	StatFile(ctx context.Context, req StatRequest) (*fstypes.Stat, error)
+	ReadDir(ctx context.Context, req ReadDirRequest) ([]*fstypes.Stat, error)
 }
 
 type ReadRequest struct {
@@ -28,6 +30,15 @@ type ReadRequest struct {
 type FileRange struct {
 	Offset int
 	Length int
+}
+
+type ReadDirRequest struct {
+	Path           string
+	IncludePattern string
+}
+
+type StatRequest struct {
+	Path string
 }
 
 // SolveRequest is same as frontend.SolveRequest but avoiding dependency
@@ -49,4 +60,12 @@ type BuildOpts struct {
 	SessionID string
 	Workers   []WorkerInfo
 	Product   string
+	LLBCaps   apicaps.CapSet
+	Caps      apicaps.CapSet
+}
+
+type ResolveImageConfigOpt struct {
+	Platform    *specs.Platform
+	ResolveMode string
+	LogName     string
 }

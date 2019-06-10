@@ -24,6 +24,7 @@ import (
 	"github.com/moby/buildkit/executor"
 	"github.com/moby/buildkit/exporter"
 	"github.com/moby/buildkit/frontend"
+	gw "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/snapshot"
 	"github.com/moby/buildkit/solver"
@@ -45,6 +46,7 @@ import (
 type Opt struct {
 	ID                string
 	Labels            map[string]string
+	GCPolicy          []client.PruneInfo
 	SessionManager    *session.Manager
 	MetadataStore     *metadata.Store
 	Executor          executor.Executor
@@ -129,9 +131,18 @@ func (w *Worker) Platforms() []ocispec.Platform {
 	return []ocispec.Platform{platforms.DefaultSpec()}
 }
 
+// GCPolicy returns automatic GC Policy
+func (w *Worker) GCPolicy() []client.PruneInfo {
+	return w.Opt.GCPolicy
+}
+
 // LoadRef loads a reference by ID
-func (w *Worker) LoadRef(id string) (cache.ImmutableRef, error) {
-	return w.CacheManager.Get(context.TODO(), id)
+func (w *Worker) LoadRef(id string, hidden bool) (cache.ImmutableRef, error) {
+	var opts []cache.RefOption
+	if hidden {
+		opts = append(opts, cache.NoUpdateLastUsed)
+	}
+	return w.CacheManager.Get(context.TODO(), id, opts...)
 }
 
 // ResolveOp converts a LLB vertex into a LLB operation
@@ -141,7 +152,7 @@ func (w *Worker) ResolveOp(v solver.Vertex, s frontend.FrontendLLBBridge) (solve
 		case *pb.Op_Source:
 			return ops.NewSourceOp(v, op, baseOp.Platform, w.SourceManager, w)
 		case *pb.Op_Exec:
-			return ops.NewExecOp(v, op, w.CacheManager, w.MetadataStore, w.Executor, w)
+			return ops.NewExecOp(v, op, w.CacheManager, w.Opt.SessionManager, w.MetadataStore, w.Executor, w)
 		case *pb.Op_Build:
 			return ops.NewBuildOp(v, op, s, w)
 		}
@@ -150,13 +161,13 @@ func (w *Worker) ResolveOp(v solver.Vertex, s frontend.FrontendLLBBridge) (solve
 }
 
 // ResolveImageConfig returns image config for an image
-func (w *Worker) ResolveImageConfig(ctx context.Context, ref string, platform *ocispec.Platform) (digest.Digest, []byte, error) {
+func (w *Worker) ResolveImageConfig(ctx context.Context, ref string, opt gw.ResolveImageConfigOpt) (digest.Digest, []byte, error) {
 	// ImageSource is typically source/containerimage
 	resolveImageConfig, ok := w.ImageSource.(resolveImageConfig)
 	if !ok {
 		return "", nil, errors.Errorf("worker %q does not implement ResolveImageConfig", w.ID())
 	}
-	return resolveImageConfig.ResolveImageConfig(ctx, ref, platform)
+	return resolveImageConfig.ResolveImageConfig(ctx, ref, opt)
 }
 
 // Exec executes a process directly on a worker
@@ -175,8 +186,8 @@ func (w *Worker) DiskUsage(ctx context.Context, opt client.DiskUsageInfo) ([]*cl
 }
 
 // Prune deletes reclaimable build cache
-func (w *Worker) Prune(ctx context.Context, ch chan client.UsageInfo) error {
-	return w.CacheManager.Prune(ctx, ch)
+func (w *Worker) Prune(ctx context.Context, ch chan client.UsageInfo, info ...client.PruneInfo) error {
+	return w.CacheManager.Prune(ctx, ch, info...)
 }
 
 // Exporter returns exporter by name
@@ -327,5 +338,5 @@ func oneOffProgress(ctx context.Context, id string) func(err error) error {
 }
 
 type resolveImageConfig interface {
-	ResolveImageConfig(ctx context.Context, ref string, platform *ocispec.Platform) (digest.Digest, []byte, error)
+	ResolveImageConfig(ctx context.Context, ref string, opt gw.ResolveImageConfigOpt) (digest.Digest, []byte, error)
 }

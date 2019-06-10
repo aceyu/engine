@@ -206,6 +206,9 @@ func (i *ImageService) Images(imageFilters filters.Args, all bool, withExtraAttr
 					if matchErr != nil {
 						return nil, matchErr
 					}
+					if found {
+						break
+					}
 				}
 				if !found {
 					continue

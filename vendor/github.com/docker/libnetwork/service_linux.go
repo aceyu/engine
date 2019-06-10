@@ -27,7 +27,7 @@ import (
 
 func init() {
 	reexec.Register("fwmarker", fwMarker)
-	reexec.Register("redirecter", redirecter)
+	reexec.Register("redirector", redirector)
 }
 
 // Populate all loadbalancers on the network that the passed endpoint
@@ -143,7 +143,7 @@ func (n *network) addLBBackend(ip net.IP, lb *loadBalancer) {
 		}
 
 		logrus.Debugf("Creating service for vip %s fwMark %d ingressPorts %#v in sbox %.7s (%.7s)", lb.vip, lb.fwMark, lb.service.ingressPorts, sb.ID(), sb.ContainerID())
-		if err := invokeFWMarker(sb.Key(), lb.vip, lb.fwMark, lb.service.ingressPorts, eIP, false); err != nil {
+		if err := invokeFWMarker(sb.Key(), lb.vip, lb.fwMark, lb.service.ingressPorts, eIP, false, n.loadBalancerMode); err != nil {
 			logrus.Errorf("Failed to add firewall mark rule in sbox %.7s (%.7s): %v", sb.ID(), sb.ContainerID(), err)
 			return
 		}
@@ -158,6 +158,9 @@ func (n *network) addLBBackend(ip net.IP, lb *loadBalancer) {
 		AddressFamily: nl.FAMILY_V4,
 		Address:       ip,
 		Weight:        1,
+	}
+	if n.loadBalancerMode == loadBalancerModeDSR {
+		d.ConnectionFlags = ipvs.ConnFwdDirectRoute
 	}
 
 	// Remove the sched name before using the service to add
@@ -204,6 +207,9 @@ func (n *network) rmLBBackend(ip net.IP, lb *loadBalancer, rmService bool, fullR
 		Address:       ip,
 		Weight:        1,
 	}
+	if n.loadBalancerMode == loadBalancerModeDSR {
+		d.ConnectionFlags = ipvs.ConnFwdDirectRoute
+	}
 
 	if fullRemove {
 		if err := i.DelDestination(s, d); err != nil && err != syscall.ENOENT {
@@ -233,7 +239,7 @@ func (n *network) rmLBBackend(ip net.IP, lb *loadBalancer, rmService bool, fullR
 			}
 		}
 
-		if err := invokeFWMarker(sb.Key(), lb.vip, lb.fwMark, lb.service.ingressPorts, eIP, true); err != nil {
+		if err := invokeFWMarker(sb.Key(), lb.vip, lb.fwMark, lb.service.ingressPorts, eIP, true, n.loadBalancerMode); err != nil {
 			logrus.Errorf("Failed to delete firewall mark rule in sbox %.7s (%.7s): %v", sb.ID(), sb.ContainerID(), err)
 		}
 
@@ -431,7 +437,7 @@ func programIngress(gwIP net.IP, ingressPorts []*PortConfig, isDelete bool) erro
 // DOCKER-USER so the user is able to filter packet first.
 // The second rule should be jump to INGRESS-CHAIN.
 // This chain has the rules to allow access to the published ports for swarm tasks
-// from local bridge networks and docker_gwbridge (ie:taks on other swarm netwroks)
+// from local bridge networks and docker_gwbridge (ie:taks on other swarm networks)
 func arrangeIngressFilterRule() {
 	if iptables.ExistChain(ingressChain, iptables.Filter) {
 		if iptables.Exists(iptables.Filter, "FORWARD", "-j", ingressChain) {
@@ -544,7 +550,7 @@ func readPortsFromFile(fileName string) ([]*PortConfig, error) {
 
 // Invoke fwmarker reexec routine to mark vip destined packets with
 // the passed firewall mark.
-func invokeFWMarker(path string, vip net.IP, fwMark uint32, ingressPorts []*PortConfig, eIP *net.IPNet, isDelete bool) error {
+func invokeFWMarker(path string, vip net.IP, fwMark uint32, ingressPorts []*PortConfig, eIP *net.IPNet, isDelete bool, lbMode string) error {
 	var ingressPortsFile string
 
 	if len(ingressPorts) != 0 {
@@ -564,7 +570,7 @@ func invokeFWMarker(path string, vip net.IP, fwMark uint32, ingressPorts []*Port
 
 	cmd := &exec.Cmd{
 		Path:   reexec.Self(),
-		Args:   append([]string{"fwmarker"}, path, vip.String(), fmt.Sprintf("%d", fwMark), addDelOpt, ingressPortsFile, eIP.String()),
+		Args:   append([]string{"fwmarker"}, path, vip.String(), fmt.Sprintf("%d", fwMark), addDelOpt, ingressPortsFile, eIP.String(), lbMode),
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 	}
@@ -581,7 +587,7 @@ func fwMarker() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if len(os.Args) < 7 {
+	if len(os.Args) < 8 {
 		logrus.Error("invalid number of arguments..")
 		os.Exit(1)
 	}
@@ -623,7 +629,8 @@ func fwMarker() {
 		os.Exit(5)
 	}
 
-	if addDelOpt == "-A" {
+	lbMode := os.Args[7]
+	if addDelOpt == "-A" && lbMode == loadBalancerModeNAT {
 		eIP, subnet, err := net.ParseCIDR(os.Args[6])
 		if err != nil {
 			logrus.Errorf("Failed to parse endpoint IP %s: %v", os.Args[6], err)
@@ -668,7 +675,7 @@ func addRedirectRules(path string, eIP *net.IPNet, ingressPorts []*PortConfig) e
 
 	cmd := &exec.Cmd{
 		Path:   reexec.Self(),
-		Args:   append([]string{"redirecter"}, path, eIP.String(), ingressPortsFile),
+		Args:   append([]string{"redirector"}, path, eIP.String(), ingressPortsFile),
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 	}
@@ -680,8 +687,8 @@ func addRedirectRules(path string, eIP *net.IPNet, ingressPorts []*PortConfig) e
 	return nil
 }
 
-// Redirecter reexec function.
-func redirecter() {
+// Redirector reexec function.
+func redirector() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 

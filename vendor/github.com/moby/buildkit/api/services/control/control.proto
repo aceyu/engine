@@ -25,11 +25,14 @@ service Control {
 }
 
 message PruneRequest {
-	// TODO: filter
+	repeated string filter = 1;
+	bool all = 2;
+	int64 keepDuration = 3 [(gogoproto.nullable) = true];
+	int64 keepBytes = 4 [(gogoproto.nullable) = true];
 }
 
 message DiskUsageRequest {
-	string filter = 1; // FIXME: this should be containerd-compatible repeated string?
+	repeated string filter = 1; 
 }
 
 message DiskUsageResponse {
@@ -46,6 +49,8 @@ message UsageRecord {
 	google.protobuf.Timestamp LastUsedAt = 7 [(gogoproto.stdtime) = true];
 	int64 UsageCount = 8;
 	string Description = 9;
+	string RecordType = 10;
+	bool Shared = 11;
 }
 
 message SolveRequest {
@@ -57,6 +62,7 @@ message SolveRequest {
 	string Frontend = 6;
 	map<string, string> FrontendAttrs = 7;
 	CacheOptions Cache = 8 [(gogoproto.nullable) = false];
+	repeated string Entitlements = 9 [(gogoproto.customtype) = "github.com/moby/buildkit/util/entitlements.Entitlement" ];
 }
 
 message CacheOptions {

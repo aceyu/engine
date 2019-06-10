@@ -2,11 +2,15 @@ package llb
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"strings"
 
 	"github.com/containerd/containerd/platforms"
 	"github.com/moby/buildkit/identity"
 	"github.com/moby/buildkit/solver/pb"
-	"github.com/moby/buildkit/util/system"
+	"github.com/moby/buildkit/util/apicaps"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -31,7 +35,6 @@ func NewState(o Output) State {
 		ctx: context.Background(),
 	}
 	s = dir("/")(s)
-	s = addEnv("PATH", system.DefaultPathEnv)(s)
 	s = s.ensurePlatform()
 	return s
 }
@@ -64,7 +67,7 @@ func (s State) Value(k interface{}) interface{} {
 	return s.ctx.Value(k)
 }
 
-func (s State) SetMarhalDefaults(co ...ConstraintsOpt) State {
+func (s State) SetMarshalDefaults(co ...ConstraintsOpt) State {
 	s.opts = co
 	return s
 }
@@ -100,6 +103,28 @@ func (s State) Marshal(co ...ConstraintsOpt) (*Definition, error) {
 		return def, err
 	}
 	def.Def = append(def.Def, dt)
+
+	dgst := digest.FromBytes(dt)
+	md := def.Metadata[dgst]
+	md.Caps = map[apicaps.CapID]bool{
+		pb.CapConstraints: true,
+		pb.CapPlatform:    true,
+	}
+
+	for _, m := range def.Metadata {
+		if m.IgnoreCache {
+			md.Caps[pb.CapMetaIgnoreCache] = true
+		}
+		if m.Description != nil {
+			md.Caps[pb.CapMetaDescription] = true
+		}
+		if m.ExportCache != nil {
+			md.Caps[pb.CapMetaExportCache] = true
+		}
+	}
+
+	def.Metadata[dgst] = md
+
 	return def, nil
 }
 
@@ -148,6 +173,31 @@ func (s State) WithOutput(o Output) State {
 	return s
 }
 
+func (s State) WithImageConfig(c []byte) (State, error) {
+	var img struct {
+		Config struct {
+			Env        []string `json:"Env,omitempty"`
+			WorkingDir string   `json:"WorkingDir,omitempty"`
+			User       string   `json:"User,omitempty"`
+		} `json:"config,omitempty"`
+	}
+	if err := json.Unmarshal(c, &img); err != nil {
+		return State{}, err
+	}
+	for _, env := range img.Config.Env {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts[0]) > 0 {
+			var v string
+			if len(parts) > 1 {
+				v = parts[1]
+			}
+			s = s.AddEnv(parts[0], v)
+		}
+	}
+	s = s.Dir(img.Config.WorkingDir)
+	return s, nil
+}
+
 func (s State) Run(ro ...RunOption) ExecState {
 	ei := &ExecInfo{State: s}
 	if p := s.GetPlatform(); p != nil {
@@ -157,17 +207,21 @@ func (s State) Run(ro ...RunOption) ExecState {
 		o.SetRunOption(ei)
 	}
 	meta := Meta{
-		Args:     getArgs(ei.State),
-		Cwd:      getDir(ei.State),
-		Env:      getEnv(ei.State),
-		User:     getUser(ei.State),
-		ProxyEnv: ei.ProxyEnv,
+		Args:       getArgs(ei.State),
+		Cwd:        getDir(ei.State),
+		Env:        getEnv(ei.State),
+		User:       getUser(ei.State),
+		ProxyEnv:   ei.ProxyEnv,
+		ExtraHosts: getExtraHosts(ei.State),
+		Network:    getNetwork(ei.State),
 	}
 
 	exec := NewExecOp(s.Output(), meta, ei.ReadonlyRootFS, ei.Constraints)
 	for _, m := range ei.Mounts {
 		exec.AddMount(m.Target, m.Source, m.Opts...)
 	}
+	exec.secrets = ei.Secrets
+	exec.ssh = ei.SSH
 
 	return ExecState{
 		State: s.WithOutput(exec.Output()),
@@ -194,6 +248,10 @@ func (s State) GetEnv(key string) (string, bool) {
 	return getEnv(s).Get(key)
 }
 
+func (s State) Env() []string {
+	return getEnv(s).ToArray()
+}
+
 func (s State) GetDir() string {
 	return getDir(s)
 }
@@ -218,11 +276,23 @@ func (s State) GetPlatform() *specs.Platform {
 	return getPlatform(s)
 }
 
+func (s State) Network(n pb.NetMode) State {
+	return network(n)(s)
+}
+
+func (s State) GetNetwork() pb.NetMode {
+	return getNetwork(s)
+}
+
 func (s State) With(so ...StateOption) State {
 	for _, o := range so {
 		s = o(s)
 	}
 	return s
+}
+
+func (s State) AddExtraHost(host string, ip net.IP) State {
+	return extraHost(host, ip)(s)
 }
 
 type output struct {
@@ -310,6 +380,13 @@ func mergeMetadata(m1, m2 pb.OpMetadata) pb.OpMetadata {
 		m1.ExportCache = m2.ExportCache
 	}
 
+	for k := range m2.Caps {
+		if m1.Caps == nil {
+			m1.Caps = make(map[apicaps.CapID]bool, len(m2.Caps))
+		}
+		m1.Caps[k] = true
+	}
+
 	return m1
 }
 
@@ -319,7 +396,18 @@ var IgnoreCache = constraintsOptFunc(func(c *Constraints) {
 
 func WithDescription(m map[string]string) ConstraintsOpt {
 	return constraintsOptFunc(func(c *Constraints) {
-		c.Metadata.Description = m
+		if c.Metadata.Description == nil {
+			c.Metadata.Description = map[string]string{}
+		}
+		for k, v := range m {
+			c.Metadata.Description[k] = v
+		}
+	})
+}
+
+func WithCustomName(name string, a ...interface{}) ConstraintsOpt {
+	return WithDescription(map[string]string{
+		"llb.customname": fmt.Sprintf(name, a...),
 	})
 }
 
@@ -348,6 +436,13 @@ func WithoutDefaultExportCache() ConstraintsOpt {
 	})
 }
 
+// WithCaps exposes supported LLB caps to the marshaler
+func WithCaps(caps apicaps.CapSet) ConstraintsOpt {
+	return constraintsOptFunc(func(c *Constraints) {
+		c.Caps = &caps
+	})
+}
+
 type constraintsWrapper struct {
 	Constraints
 }
@@ -361,6 +456,7 @@ type Constraints struct {
 	WorkerConstraints []string
 	Metadata          pb.OpMetadata
 	LocalUniqueID     string
+	Caps              *apicaps.CapSet
 }
 
 func Platform(p specs.Platform) ConstraintsOpt {

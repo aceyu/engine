@@ -217,13 +217,13 @@ func setNamespaces(daemon *Daemon, s *specs.Spec, c *container.Container) error 
 	userNS := false
 	// user
 	if c.HostConfig.UsernsMode.IsPrivate() {
-		uidMap := daemon.idMappings.UIDs()
+		uidMap := daemon.idMapping.UIDs()
 		if uidMap != nil {
 			userNS = true
 			ns := specs.LinuxNamespace{Type: "user"}
 			setNamespace(s, ns)
 			s.Linux.UIDMappings = specMapping(uidMap)
-			s.Linux.GIDMappings = specMapping(daemon.idMappings.GIDs())
+			s.Linux.GIDMappings = specMapping(daemon.idMapping.GIDs())
 		}
 	}
 	// network
@@ -462,7 +462,7 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 	}
 
 	// Copy all mounts from spec to defaultMounts, except for
-	//  - mounts overriden by a user supplied mount;
+	//  - mounts overridden by a user supplied mount;
 	//  - all mounts under /dev if a user supplied /dev is present;
 	//  - /dev/shm, in case IpcMode is none.
 	// While at it, also
@@ -539,7 +539,7 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 		case mount.SLAVE, mount.RSLAVE:
 			var fallback bool
 			if err := ensureSharedOrSlave(m.Source); err != nil {
-				// For backwards compatability purposes, treat mounts from the daemon root
+				// For backwards compatibility purposes, treat mounts from the daemon root
 				// as special since we automatically add rslave propagation to these mounts
 				// when the user did not set anything, so we should fallback to the old
 				// behavior which is to use private propagation which is normally the
@@ -619,7 +619,7 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 
 	// TODO: until a kernel/mount solution exists for handling remount in a user namespace,
 	// we must clear the readonly flag for the cgroups mount (@mrunalp concurs)
-	if uidMap := daemon.idMappings.UIDs(); uidMap != nil || c.HostConfig.Privileged {
+	if uidMap := daemon.idMapping.UIDs(); uidMap != nil || c.HostConfig.Privileged {
 		for i, m := range s.Mounts {
 			if m.Type == "cgroup" {
 				clearReadOnly(&s.Mounts[i])
@@ -642,7 +642,7 @@ func (daemon *Daemon) populateCommonSpec(s *specs.Spec, c *container.Container) 
 		Path:     c.BaseFS.Path(),
 		Readonly: c.HostConfig.ReadonlyRootfs,
 	}
-	if err := c.SetupWorkingDirectory(daemon.idMappings.RootPair()); err != nil {
+	if err := c.SetupWorkingDirectory(daemon.idMapping.RootPair()); err != nil {
 		return err
 	}
 	cwd := c.Config.WorkingDir

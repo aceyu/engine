@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/daemon/cluster/executor/container"
 	lncluster "github.com/docker/libnetwork/cluster"
 	swarmapi "github.com/docker/swarmkit/api"
+	"github.com/docker/swarmkit/manager/allocator/cnmallocator"
 	swarmnode "github.com/docker/swarmkit/node"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -52,6 +53,10 @@ type nodeStartConfig struct {
 	AdvertiseAddr string
 	// DataPathAddr is the address that has to be used for the data path
 	DataPathAddr string
+	// DefaultAddressPool contains list of subnets
+	DefaultAddressPool []string
+	// SubnetSize contains subnet size of DefaultAddressPool
+	SubnetSize uint32
 	// JoinInProgress is set to true if a join operation has started, but
 	// not completed yet.
 	JoinInProgress bool
@@ -117,9 +122,13 @@ func (n *nodeRunner) start(conf nodeStartConfig) error {
 		ListenControlAPI:   control,
 		ListenRemoteAPI:    conf.ListenAddr,
 		AdvertiseRemoteAPI: conf.AdvertiseAddr,
-		JoinAddr:           joinAddr,
-		StateDir:           n.cluster.root,
-		JoinToken:          conf.joinToken,
+		NetworkConfig: &cnmallocator.NetworkConfig{
+			DefaultAddrPool: conf.DefaultAddressPool,
+			SubnetSize:      conf.SubnetSize,
+		},
+		JoinAddr:  joinAddr,
+		StateDir:  n.cluster.root,
+		JoinToken: conf.joinToken,
 		Executor: container.NewExecutor(
 			n.cluster.config.Backend,
 			n.cluster.config.PluginBackend,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
+	"github.com/tonistiigi/fsutil/types"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -25,7 +26,7 @@ type DiskWriterOpt struct {
 	Filter        FilterFunc
 }
 
-type FilterFunc func(*Stat) bool
+type FilterFunc func(*types.Stat) bool
 
 type DiskWriter struct {
 	opt  DiskWriterOpt
@@ -95,7 +96,7 @@ func (dw *DiskWriter) HandleChange(kind ChangeKind, p string, fi os.FileInfo, er
 		return nil
 	}
 
-	stat, ok := fi.Sys().(*Stat)
+	stat, ok := fi.Sys().(*types.Stat)
 	if !ok {
 		return errors.Errorf("%s invalid change without stat information", p)
 	}
@@ -175,6 +176,11 @@ func (dw *DiskWriter) HandleChange(kind ChangeKind, p string, fi os.FileInfo, er
 	}
 
 	if rename {
+		if oldFi.IsDir() != fi.IsDir() {
+			if err := os.RemoveAll(destPath); err != nil {
+				return errors.Wrapf(err, "failed to remove %s", destPath)
+			}
+		}
 		if err := os.Rename(newPath, destPath); err != nil {
 			return errors.Wrapf(err, "failed to rename %s to %s", newPath, destPath)
 		}
@@ -241,7 +247,7 @@ type hashedWriter struct {
 }
 
 func newHashWriter(ch ContentHasher, fi os.FileInfo, w io.WriteCloser) (*hashedWriter, error) {
-	stat, ok := fi.Sys().(*Stat)
+	stat, ok := fi.Sys().(*types.Stat)
 	if !ok {
 		return nil, errors.Errorf("invalid change without stat information")
 	}

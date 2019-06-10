@@ -84,6 +84,7 @@ type sandbox struct {
 	ingress            bool
 	ndotsSet           bool
 	oslTypes           []osl.SandboxType // slice of properties of this sandbox
+	loadBalancerNID    string            // NID that this SB is a load balancer for
 	sync.Mutex
 	// This mutex is used to serialize service related operation for an endpoint
 	// The lock is here because the endpoint is saved into the store so is not unique
@@ -467,7 +468,7 @@ func (sb *sandbox) ResolveService(name string) ([]*net.SRV, []net.IP) {
 
 	logrus.Debugf("Service name To resolve: %v", name)
 
-	// There are DNS implementaions that allow SRV queries for names not in
+	// There are DNS implementations that allow SRV queries for names not in
 	// the format defined by RFC 2782. Hence specific validations checks are
 	// not done
 	parts := strings.Split(name, ".")
@@ -741,7 +742,16 @@ func releaseOSSboxResources(osSbox osl.Sandbox, ep *endpoint) {
 
 	ep.Lock()
 	joinInfo := ep.joinInfo
+	vip := ep.virtualIP
+	lbModeIsDSR := ep.network.loadBalancerMode == loadBalancerModeDSR
 	ep.Unlock()
+
+	if len(vip) > 0 && lbModeIsDSR {
+		ipNet := &net.IPNet{IP: vip, Mask: net.CIDRMask(32, 32)}
+		if err := osSbox.RemoveAliasIP(osSbox.GetLoopbackIfaceName(), ipNet); err != nil {
+			logrus.WithError(err).Debugf("failed to remove virtual ip %v to loopback", ipNet)
+		}
+	}
 
 	if joinInfo == nil {
 		return
@@ -830,6 +840,7 @@ func (sb *sandbox) populateNetworkResources(ep *endpoint) error {
 	ep.Lock()
 	joinInfo := ep.joinInfo
 	i := ep.iface
+	lbModeIsDSR := ep.network.loadBalancerMode == loadBalancerModeDSR
 	ep.Unlock()
 
 	if ep.needResolver() {
@@ -852,6 +863,18 @@ func (sb *sandbox) populateNetworkResources(ep *endpoint) error {
 
 		if err := sb.osSbox.AddInterface(i.srcName, i.dstPrefix, ifaceOptions...); err != nil {
 			return fmt.Errorf("failed to add interface %s to sandbox: %v", i.srcName, err)
+		}
+
+		if len(ep.virtualIP) > 0 && lbModeIsDSR {
+			if sb.loadBalancerNID == "" {
+				if err := sb.osSbox.DisableARPForVIP(i.srcName); err != nil {
+					return fmt.Errorf("failed disable ARP for VIP: %v", err)
+				}
+			}
+			ipNet := &net.IPNet{IP: ep.virtualIP, Mask: net.CIDRMask(32, 32)}
+			if err := sb.osSbox.AddAliasIP(sb.osSbox.GetLoopbackIfaceName(), ipNet); err != nil {
+				return fmt.Errorf("failed to add virtual ip %v to loopback: %v", ipNet, err)
+			}
 		}
 	}
 
@@ -1098,8 +1121,8 @@ func OptionDNSOptions(options string) SandboxOption {
 	}
 }
 
-// OptionUseDefaultSandbox function returns an option setter for using default sandbox to
-// be passed to container Create method.
+// OptionUseDefaultSandbox function returns an option setter for using default sandbox
+// (host namespace) to be passed to container Create method.
 func OptionUseDefaultSandbox() SandboxOption {
 	return func(sb *sandbox) {
 		sb.config.useDefaultSandBox = true
@@ -1169,8 +1192,9 @@ func OptionIngress() SandboxOption {
 
 // OptionLoadBalancer function returns an option setter for marking a
 // sandbox as a load balancer sandbox.
-func OptionLoadBalancer() SandboxOption {
+func OptionLoadBalancer(nid string) SandboxOption {
 	return func(sb *sandbox) {
+		sb.loadBalancerNID = nid
 		sb.oslTypes = append(sb.oslTypes, osl.SandboxTypeLoadBalancer)
 	}
 }

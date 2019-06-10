@@ -70,6 +70,28 @@ const (
 // of docker.
 const defaultOwner = "docker"
 
+type client struct {
+	sync.Mutex
+
+	stateDir   string
+	backend    Backend
+	logger     *logrus.Entry
+	eventQ     queue
+	containers map[string]*container
+}
+
+// NewClient creates a new local executor for windows
+func NewClient(ctx context.Context, cli *containerd.Client, stateDir, ns string, b Backend) (Client, error) {
+	c := &client{
+		stateDir:   stateDir,
+		backend:    b,
+		logger:     logrus.WithField("module", "libcontainerd").WithField("module", "libcontainerd").WithField("namespace", ns),
+		containers: make(map[string]*container),
+	}
+
+	return c, nil
+}
+
 func (c *client) Version(ctx context.Context) (containerd.Version, error) {
 	return containerd.Version{}, errors.New("not implemented on Windows")
 }
@@ -492,6 +514,10 @@ func (c *client) createLinux(id string, spec *specs.Spec, runtimeOptions interfa
 				ContainerPath:     path.Join(uvmPath, mount.Destination),
 				CreateInUtilityVM: true,
 				ReadOnly:          readonly,
+			}
+			// If we are 1803/RS4+ enable LinuxMetadata support by default
+			if system.GetOSVersion().Build >= 17134 {
+				md.LinuxMetadata = true
 			}
 			mds = append(mds, md)
 			specMount.Source = path.Join(uvmPath, mount.Destination)

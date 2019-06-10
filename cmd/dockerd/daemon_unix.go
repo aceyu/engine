@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/containerd/containerd/runtime/linux"
+	"github.com/containerd/containerd/runtime/v1/linux"
 	"github.com/docker/docker/cmd/dockerd/hack"
 	"github.com/docker/docker/daemon"
-	"github.com/docker/docker/libcontainerd"
+	"github.com/docker/docker/daemon/config"
+	"github.com/docker/docker/libcontainerd/supervisor"
 	"github.com/docker/libnetwork/portallocator"
 	"golang.org/x/sys/unix"
 )
@@ -36,23 +37,15 @@ func getDaemonConfDir(_ string) string {
 	return "/etc/docker"
 }
 
-func (cli *DaemonCli) getPlatformRemoteOptions() ([]libcontainerd.RemoteOption, error) {
-	opts := []libcontainerd.RemoteOption{
-		libcontainerd.WithOOMScore(cli.Config.OOMScoreAdjust),
-		libcontainerd.WithPlugin("linux", &linux.Config{
+func (cli *DaemonCli) getPlatformContainerdDaemonOpts() ([]supervisor.DaemonOpt, error) {
+	opts := []supervisor.DaemonOpt{
+		supervisor.WithOOMScore(cli.Config.OOMScoreAdjust),
+		supervisor.WithPlugin("linux", &linux.Config{
 			Shim:        daemon.DefaultShimBinary,
 			Runtime:     daemon.DefaultRuntimeBinary,
 			RuntimeRoot: filepath.Join(cli.Config.Root, "runc"),
 			ShimDebug:   cli.Config.Debug,
 		}),
-	}
-	if cli.Config.Debug {
-		opts = append(opts, libcontainerd.WithLogLevel("debug"))
-	}
-	if cli.Config.ContainerdAddr != "" {
-		opts = append(opts, libcontainerd.WithRemoteAddr(cli.Config.ContainerdAddr))
-	} else {
-		opts = append(opts, libcontainerd.WithStartDaemon(true))
 	}
 
 	return opts, nil
@@ -114,4 +107,19 @@ func wrapListeners(proto string, ls []net.Listener) []net.Listener {
 		}
 	}
 	return ls
+}
+
+func newCgroupParent(config *config.Config) string {
+	cgroupParent := "docker"
+	useSystemd := daemon.UsingSystemd(config)
+	if useSystemd {
+		cgroupParent = "system.slice"
+	}
+	if config.CgroupParent != "" {
+		cgroupParent = config.CgroupParent
+	}
+	if useSystemd {
+		cgroupParent = cgroupParent + ":" + "docker" + ":"
+	}
+	return cgroupParent
 }

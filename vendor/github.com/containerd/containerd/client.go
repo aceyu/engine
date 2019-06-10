@@ -43,8 +43,11 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/events"
 	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/leases"
+	leasesproxy "github.com/containerd/containerd/leases/proxy"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/pkg/dialer"
+	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/remotes"
 	"github.com/containerd/containerd/remotes/docker"
@@ -79,8 +82,15 @@ func New(address string, opts ...ClientOpt) (*Client, error) {
 			return nil, err
 		}
 	}
+	if copts.timeout == 0 {
+		copts.timeout = 10 * time.Second
+	}
+	rt := fmt.Sprintf("%s.%s", plugin.RuntimePlugin, runtime.GOOS)
+	if copts.defaultRuntime != "" {
+		rt = copts.defaultRuntime
+	}
 	c := &Client{
-		runtime: fmt.Sprintf("%s.%s", plugin.RuntimePlugin, runtime.GOOS),
+		runtime: rt,
 	}
 	if copts.services != nil {
 		c.services = *copts.services
@@ -108,7 +118,7 @@ func New(address string, opts ...ClientOpt) (*Client, error) {
 			)
 		}
 		connector := func() (*grpc.ClientConn, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), copts.timeout)
 			defer cancel()
 			conn, err := grpc.DialContext(ctx, dialer.DialAddress(address), gopts...)
 			if err != nil {
@@ -249,9 +259,10 @@ type RemoteContext struct {
 	// If no resolver is provided, defaults to Docker registry resolver.
 	Resolver remotes.Resolver
 
-	// Platforms defines which platforms to handle when doing the image operation.
-	// If this field is empty, content for all platforms will be pulled.
-	Platforms []string
+	// PlatformMatcher is used to match the platforms for an image
+	// operation and define the preference when a single match is required
+	// from multiple platforms.
+	PlatformMatcher platforms.MatchComparer
 
 	// Unpack is done after an image is pulled to extract into a snapshotter.
 	// If an image is not unpacked on pull, it can be unpacked any time
@@ -273,6 +284,12 @@ type RemoteContext struct {
 	// manifests. If this option is false then any image which resolves
 	// to schema 1 will return an error since schema 1 is not supported.
 	ConvertSchema1 bool
+
+	// Platforms defines which platforms to handle when doing the image operation.
+	// Platforms is ignored when a PlatformMatcher is set, otherwise the
+	// platforms will be used to create a PlatformMatcher with no ordering
+	// preference.
+	Platforms []string
 }
 
 func defaultRemoteContext() *RemoteContext {
@@ -284,7 +301,48 @@ func defaultRemoteContext() *RemoteContext {
 	}
 }
 
+// Fetch downloads the provided content into containerd's content store
+// and returns a non-platform specific image reference
+func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (images.Image, error) {
+	fetchCtx := defaultRemoteContext()
+	for _, o := range opts {
+		if err := o(c, fetchCtx); err != nil {
+			return images.Image{}, err
+		}
+	}
+
+	if fetchCtx.Unpack {
+		return images.Image{}, errors.New("unpack on fetch not supported, try pull")
+	}
+
+	if fetchCtx.PlatformMatcher == nil {
+		if len(fetchCtx.Platforms) == 0 {
+			fetchCtx.PlatformMatcher = platforms.All
+		} else {
+			var ps []ocispec.Platform
+			for _, s := range fetchCtx.Platforms {
+				p, err := platforms.Parse(s)
+				if err != nil {
+					return images.Image{}, errors.Wrapf(err, "invalid platform %s", s)
+				}
+				ps = append(ps, p)
+			}
+
+			fetchCtx.PlatformMatcher = platforms.Any(ps...)
+		}
+	}
+
+	ctx, done, err := c.WithLease(ctx)
+	if err != nil {
+		return images.Image{}, err
+	}
+	defer done(ctx)
+
+	return c.fetch(ctx, fetchCtx, ref, 0)
+}
+
 // Pull downloads the provided content into containerd's content store
+// and returns a platform specific image object
 func (c *Client) Pull(ctx context.Context, ref string, opts ...RemoteOpt) (Image, error) {
 	pullCtx := defaultRemoteContext()
 	for _, o := range opts {
@@ -292,7 +350,21 @@ func (c *Client) Pull(ctx context.Context, ref string, opts ...RemoteOpt) (Image
 			return nil, err
 		}
 	}
-	store := c.ContentStore()
+
+	if pullCtx.PlatformMatcher == nil {
+		if len(pullCtx.Platforms) > 1 {
+			return nil, errors.New("cannot pull multiplatform image locally, try Fetch")
+		} else if len(pullCtx.Platforms) == 0 {
+			pullCtx.PlatformMatcher = platforms.Default()
+		} else {
+			p, err := platforms.Parse(pullCtx.Platforms[0])
+			if err != nil {
+				return nil, errors.Wrapf(err, "invalid platform %s", pullCtx.Platforms[0])
+			}
+
+			pullCtx.PlatformMatcher = platforms.Only(p)
+		}
+	}
 
 	ctx, done, err := c.WithLease(ctx)
 	if err != nil {
@@ -300,82 +372,96 @@ func (c *Client) Pull(ctx context.Context, ref string, opts ...RemoteOpt) (Image
 	}
 	defer done(ctx)
 
-	name, desc, err := pullCtx.Resolver.Resolve(ctx, ref)
+	img, err := c.fetch(ctx, pullCtx, ref, 1)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to resolve reference %q", ref)
+		return nil, err
 	}
 
-	fetcher, err := pullCtx.Resolver.Fetcher(ctx, name)
+	i := NewImageWithPlatform(c, img, pullCtx.PlatformMatcher)
+
+	if pullCtx.Unpack {
+		if err := i.Unpack(ctx, pullCtx.Snapshotter); err != nil {
+			return nil, errors.Wrapf(err, "failed to unpack image on snapshotter %s", pullCtx.Snapshotter)
+		}
+	}
+
+	return i, nil
+}
+
+func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, limit int) (images.Image, error) {
+	store := c.ContentStore()
+	name, desc, err := rCtx.Resolver.Resolve(ctx, ref)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to get fetcher for %q", name)
+		return images.Image{}, errors.Wrapf(err, "failed to resolve reference %q", ref)
+	}
+
+	fetcher, err := rCtx.Resolver.Fetcher(ctx, name)
+	if err != nil {
+		return images.Image{}, errors.Wrapf(err, "failed to get fetcher for %q", name)
 	}
 
 	var (
 		schema1Converter *schema1.Converter
 		handler          images.Handler
 	)
-	if desc.MediaType == images.MediaTypeDockerSchema1Manifest && pullCtx.ConvertSchema1 {
+	if desc.MediaType == images.MediaTypeDockerSchema1Manifest && rCtx.ConvertSchema1 {
 		schema1Converter = schema1.NewConverter(store, fetcher)
-		handler = images.Handlers(append(pullCtx.BaseHandlers, schema1Converter)...)
+		handler = images.Handlers(append(rCtx.BaseHandlers, schema1Converter)...)
 	} else {
 		// Get all the children for a descriptor
 		childrenHandler := images.ChildrenHandler(store)
 		// Set any children labels for that content
 		childrenHandler = images.SetChildrenLabels(store, childrenHandler)
 		// Filter children by platforms
-		childrenHandler = images.FilterPlatforms(childrenHandler, pullCtx.Platforms...)
+		childrenHandler = images.FilterPlatforms(childrenHandler, rCtx.PlatformMatcher)
+		// Sort and limit manifests if a finite number is needed
+		if limit > 0 {
+			childrenHandler = images.LimitManifests(childrenHandler, rCtx.PlatformMatcher, limit)
+		}
 
-		handler = images.Handlers(append(pullCtx.BaseHandlers,
+		handler = images.Handlers(append(rCtx.BaseHandlers,
 			remotes.FetchHandler(store, fetcher),
 			childrenHandler,
 		)...)
 	}
 
 	if err := images.Dispatch(ctx, handler, desc); err != nil {
-		return nil, err
+		return images.Image{}, err
 	}
 	if schema1Converter != nil {
 		desc, err = schema1Converter.Convert(ctx)
 		if err != nil {
-			return nil, err
+			return images.Image{}, err
 		}
 	}
 
-	img := &image{
-		client: c,
-		i: images.Image{
-			Name:   name,
-			Target: desc,
-			Labels: pullCtx.Labels,
-		},
-	}
-
-	if pullCtx.Unpack {
-		if err := img.Unpack(ctx, pullCtx.Snapshotter); err != nil {
-			return nil, errors.Wrapf(err, "failed to unpack image on snapshotter %s", pullCtx.Snapshotter)
-		}
+	img := images.Image{
+		Name:   name,
+		Target: desc,
+		Labels: rCtx.Labels,
 	}
 
 	is := c.ImageService()
 	for {
-		if created, err := is.Create(ctx, img.i); err != nil {
+		if created, err := is.Create(ctx, img); err != nil {
 			if !errdefs.IsAlreadyExists(err) {
-				return nil, err
+				return images.Image{}, err
 			}
 
-			updated, err := is.Update(ctx, img.i)
+			updated, err := is.Update(ctx, img)
 			if err != nil {
 				// if image was removed, try create again
 				if errdefs.IsNotFound(err) {
 					continue
 				}
-				return nil, err
+				return images.Image{}, err
 			}
 
-			img.i = updated
+			img = updated
 		} else {
-			img.i = created
+			img = created
 		}
+
 		return img, nil
 	}
 }
@@ -388,13 +474,28 @@ func (c *Client) Push(ctx context.Context, ref string, desc ocispec.Descriptor, 
 			return err
 		}
 	}
+	if pushCtx.PlatformMatcher == nil {
+		if len(pushCtx.Platforms) > 0 {
+			var ps []ocispec.Platform
+			for _, platform := range pushCtx.Platforms {
+				p, err := platforms.Parse(platform)
+				if err != nil {
+					return errors.Wrapf(err, "invalid platform %s", platform)
+				}
+				ps = append(ps, p)
+			}
+			pushCtx.PlatformMatcher = platforms.Any(ps...)
+		} else {
+			pushCtx.PlatformMatcher = platforms.All
+		}
+	}
 
 	pusher, err := pushCtx.Resolver.Pusher(ctx, ref)
 	if err != nil {
 		return err
 	}
 
-	return remotes.PushContent(ctx, pusher, desc, c.ContentStore(), pushCtx.Platforms, pushCtx.BaseHandlers...)
+	return remotes.PushContent(ctx, pusher, desc, c.ContentStore(), pushCtx.PlatformMatcher, pushCtx.BaseHandlers...)
 }
 
 // GetImage returns an existing image
@@ -403,10 +504,7 @@ func (c *Client) GetImage(ctx context.Context, ref string) (Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &image{
-		client: c,
-		i:      i,
-	}, nil
+	return NewImage(c, i), nil
 }
 
 // ListImages returns all existing images
@@ -417,10 +515,7 @@ func (c *Client) ListImages(ctx context.Context, filters ...string) ([]Image, er
 	}
 	images := make([]Image, len(imgs))
 	for i, img := range imgs {
-		images[i] = &image{
-			client: c,
-			i:      img,
-		}
+		images[i] = NewImage(c, img)
 	}
 	return images, nil
 }
@@ -451,6 +546,8 @@ func (c *Client) NamespaceService() namespaces.Store {
 	if c.namespaceStore != nil {
 		return c.namespaceStore
 	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return NewNamespaceStoreFromClient(namespacesapi.NewNamespacesClient(c.conn))
 }
 
@@ -459,6 +556,8 @@ func (c *Client) ContainerService() containers.Store {
 	if c.containerStore != nil {
 		return c.containerStore
 	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return NewRemoteContainerStore(containersapi.NewContainersClient(c.conn))
 }
 
@@ -467,6 +566,8 @@ func (c *Client) ContentStore() content.Store {
 	if c.contentStore != nil {
 		return c.contentStore
 	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return contentproxy.NewContentStore(contentapi.NewContentClient(c.conn))
 }
 
@@ -475,6 +576,8 @@ func (c *Client) SnapshotService(snapshotterName string) snapshots.Snapshotter {
 	if c.snapshotters != nil {
 		return c.snapshotters[snapshotterName]
 	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return snproxy.NewSnapshotter(snapshotsapi.NewSnapshotsClient(c.conn), snapshotterName)
 }
 
@@ -483,6 +586,8 @@ func (c *Client) TaskService() tasks.TasksClient {
 	if c.taskService != nil {
 		return c.taskService
 	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return tasks.NewTasksClient(c.conn)
 }
 
@@ -491,6 +596,8 @@ func (c *Client) ImageService() images.Store {
 	if c.imageStore != nil {
 		return c.imageStore
 	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return NewImageStoreFromClient(imagesapi.NewImagesClient(c.conn))
 }
 
@@ -499,24 +606,32 @@ func (c *Client) DiffService() DiffService {
 	if c.diffService != nil {
 		return c.diffService
 	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return NewDiffServiceFromClient(diffapi.NewDiffClient(c.conn))
 }
 
 // IntrospectionService returns the underlying Introspection Client
 func (c *Client) IntrospectionService() introspectionapi.IntrospectionClient {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return introspectionapi.NewIntrospectionClient(c.conn)
 }
 
 // LeasesService returns the underlying Leases Client
-func (c *Client) LeasesService() leasesapi.LeasesClient {
+func (c *Client) LeasesService() leases.Manager {
 	if c.leasesService != nil {
 		return c.leasesService
 	}
-	return leasesapi.NewLeasesClient(c.conn)
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	return leasesproxy.NewLeaseManager(leasesapi.NewLeasesClient(c.conn))
 }
 
 // HealthService returns the underlying GRPC HealthClient
 func (c *Client) HealthService() grpc_health_v1.HealthClient {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return grpc_health_v1.NewHealthClient(c.conn)
 }
 
@@ -525,11 +640,15 @@ func (c *Client) EventService() EventService {
 	if c.eventService != nil {
 		return c.eventService
 	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return NewEventServiceFromClient(eventsapi.NewEventsClient(c.conn))
 }
 
 // VersionService returns the underlying VersionClient
 func (c *Client) VersionService() versionservice.VersionClient {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
 	return versionservice.NewVersionClient(c.conn)
 }
 

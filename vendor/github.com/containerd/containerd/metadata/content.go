@@ -23,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/boltdb/bolt"
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/filters"
@@ -34,6 +33,7 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
+	bolt "go.etcd.io/bbolt"
 )
 
 type contentStore struct {
@@ -328,6 +328,10 @@ func (cs *contentStore) Abort(ctx context.Context, ref string) error {
 			return err
 		}
 
+		if err := removeIngestLease(ctx, tx, ref); err != nil {
+			return err
+		}
+
 		// if not shared content, delete active ingest on backend
 		if expected == "" {
 			return cs.Store.Abort(ctx, bref)
@@ -395,6 +399,11 @@ func (cs *contentStore) Writer(ctx context.Context, opts ...content.WriterOpt) (
 			return err
 		}
 
+		leased, err := addIngestLease(ctx, tx, wOpts.Ref)
+		if err != nil {
+			return err
+		}
+
 		brefb := bkt.Get(bucketKeyRef)
 		if brefb == nil {
 			sid, err := bkt.NextSequence()
@@ -408,6 +417,18 @@ func (cs *contentStore) Writer(ctx context.Context, opts ...content.WriterOpt) (
 			}
 		} else {
 			bref = string(brefb)
+		}
+		if !leased {
+			// Add timestamp to allow aborting once stale
+			// When lease is set the ingest should be aborted
+			// after lease it belonged to is deleted.
+			// Expiration can be configurable in the future to
+			// give more control to the daemon, however leases
+			// already give users more control of expiration.
+			expireAt := time.Now().UTC().Add(24 * time.Hour)
+			if err := writeExpireAt(expireAt, bkt); err != nil {
+				return err
+			}
 		}
 
 		if shared {
@@ -532,68 +553,83 @@ func (nw *namespacedWriter) Commit(ctx context.Context, size int64, expected dig
 	nw.l.RLock()
 	defer nw.l.RUnlock()
 
-	return update(ctx, nw.db, func(tx *bolt.Tx) error {
+	var innerErr error
+
+	if err := update(ctx, nw.db, func(tx *bolt.Tx) error {
+		dgst, err := nw.commit(ctx, tx, size, expected, opts...)
+		if err != nil {
+			if !errdefs.IsAlreadyExists(err) {
+				return err
+			}
+			innerErr = err
+		}
 		bkt := getIngestsBucket(tx, nw.namespace)
 		if bkt != nil {
 			if err := bkt.DeleteBucket([]byte(nw.ref)); err != nil && err != bolt.ErrBucketNotFound {
 				return err
 			}
 		}
-		dgst, err := nw.commit(ctx, tx, size, expected, opts...)
-		if err != nil {
+		if err := removeIngestLease(ctx, tx, nw.ref); err != nil {
 			return err
 		}
 		return addContentLease(ctx, tx, dgst)
-	})
+	}); err != nil {
+		return err
+	}
+
+	return innerErr
 }
 
 func (nw *namespacedWriter) commit(ctx context.Context, tx *bolt.Tx, size int64, expected digest.Digest, opts ...content.Opt) (digest.Digest, error) {
 	var base content.Info
 	for _, opt := range opts {
 		if err := opt(&base); err != nil {
+			if nw.w != nil {
+				nw.w.Close()
+			}
 			return "", err
 		}
 	}
 	if err := validateInfo(&base); err != nil {
+		if nw.w != nil {
+			nw.w.Close()
+		}
 		return "", err
 	}
 
 	var actual digest.Digest
 	if nw.w == nil {
 		if size != 0 && size != nw.desc.Size {
-			return "", errors.Errorf("%q failed size validation: %v != %v", nw.ref, nw.desc.Size, size)
+			return "", errors.Wrapf(errdefs.ErrFailedPrecondition, "%q failed size validation: %v != %v", nw.ref, nw.desc.Size, size)
 		}
 		if expected != "" && expected != nw.desc.Digest {
-			return "", errors.Errorf("%q unexpected digest", nw.ref)
+			return "", errors.Wrapf(errdefs.ErrFailedPrecondition, "%q unexpected digest", nw.ref)
 		}
 		size = nw.desc.Size
 		actual = nw.desc.Digest
-		if getBlobBucket(tx, nw.namespace, actual) != nil {
-			return "", errors.Wrapf(errdefs.ErrAlreadyExists, "content %v", actual)
-		}
 	} else {
 		status, err := nw.w.Status()
 		if err != nil {
+			nw.w.Close()
 			return "", err
 		}
 		if size != 0 && size != status.Offset {
-			return "", errors.Errorf("%q failed size validation: %v != %v", nw.ref, status.Offset, size)
+			nw.w.Close()
+			return "", errors.Wrapf(errdefs.ErrFailedPrecondition, "%q failed size validation: %v != %v", nw.ref, status.Offset, size)
 		}
 		size = status.Offset
 		actual = nw.w.Digest()
 
-		if err := nw.w.Commit(ctx, size, expected); err != nil {
-			if !errdefs.IsAlreadyExists(err) {
-				return "", err
-			}
-			if getBlobBucket(tx, nw.namespace, actual) != nil {
-				return "", errors.Wrapf(errdefs.ErrAlreadyExists, "content %v", actual)
-			}
+		if err := nw.w.Commit(ctx, size, expected); err != nil && !errdefs.IsAlreadyExists(err) {
+			return "", err
 		}
 	}
 
 	bkt, err := createBlobBucket(tx, nw.namespace, actual)
 	if err != nil {
+		if err == bolt.ErrBucketExists {
+			return actual, errors.Wrapf(errdefs.ErrAlreadyExists, "content %v", actual)
+		}
 		return "", err
 	}
 
@@ -697,6 +733,30 @@ func writeInfo(info *content.Info, bkt *bolt.Bucket) error {
 	return bkt.Put(bucketKeySize, sizeEncoded)
 }
 
+func readExpireAt(bkt *bolt.Bucket) (*time.Time, error) {
+	v := bkt.Get(bucketKeyExpireAt)
+	if v == nil {
+		return nil, nil
+	}
+	t := &time.Time{}
+	if err := t.UnmarshalBinary(v); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func writeExpireAt(expire time.Time, bkt *bolt.Bucket) error {
+	expireAt, err := expire.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	if err := bkt.Put(bucketKeyExpireAt, expireAt); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (cs *contentStore) garbageCollect(ctx context.Context) (d time.Duration, err error) {
 	cs.l.Lock()
 	t1 := time.Now()
@@ -707,7 +767,8 @@ func (cs *contentStore) garbageCollect(ctx context.Context) (d time.Duration, er
 		cs.l.Unlock()
 	}()
 
-	seen := map[string]struct{}{}
+	contentSeen := map[string]struct{}{}
+	ingestSeen := map[string]struct{}{}
 	if err := cs.db.View(func(tx *bolt.Tx) error {
 		v1bkt := tx.Bucket(bucketKeyVersion)
 		if v1bkt == nil {
@@ -730,7 +791,7 @@ func (cs *contentStore) garbageCollect(ctx context.Context) (d time.Duration, er
 			if bbkt != nil {
 				if err := bbkt.ForEach(func(ck, cv []byte) error {
 					if cv == nil {
-						seen[string(ck)] = struct{}{}
+						contentSeen[string(ck)] = struct{}{}
 					}
 					return nil
 				}); err != nil {
@@ -742,9 +803,17 @@ func (cs *contentStore) garbageCollect(ctx context.Context) (d time.Duration, er
 			if ibkt != nil {
 				if err := ibkt.ForEach(func(ref, v []byte) error {
 					if v == nil {
-						expected := ibkt.Bucket(ref).Get(bucketKeyExpected)
+						bkt := ibkt.Bucket(ref)
+						// expected here may be from a different namespace
+						// so much be explicitly retained from the ingest
+						// in case it was removed from the other namespace
+						expected := bkt.Get(bucketKeyExpected)
 						if len(expected) > 0 {
-							seen[string(expected)] = struct{}{}
+							contentSeen[string(expected)] = struct{}{}
+						}
+						bref := bkt.Get(bucketKeyRef)
+						if len(bref) > 0 {
+							ingestSeen[string(bref)] = struct{}{}
 						}
 					}
 					return nil
@@ -760,7 +829,7 @@ func (cs *contentStore) garbageCollect(ctx context.Context) (d time.Duration, er
 	}
 
 	err = cs.Store.Walk(ctx, func(info content.Info) error {
-		if _, ok := seen[info.Digest.String()]; !ok {
+		if _, ok := contentSeen[info.Digest.String()]; !ok {
 			if err := cs.Store.Delete(ctx, info.Digest); err != nil {
 				return err
 			}
@@ -768,5 +837,40 @@ func (cs *contentStore) garbageCollect(ctx context.Context) (d time.Duration, er
 		}
 		return nil
 	})
+	if err != nil {
+		return
+	}
+
+	// If the content store has implemented a more efficient walk function
+	// then use that else fallback to reading all statuses which may
+	// cause reading of unneeded metadata.
+	type statusWalker interface {
+		WalkStatusRefs(context.Context, func(string) error) error
+	}
+	if w, ok := cs.Store.(statusWalker); ok {
+		err = w.WalkStatusRefs(ctx, func(ref string) error {
+			if _, ok := ingestSeen[ref]; !ok {
+				if err := cs.Store.Abort(ctx, ref); err != nil {
+					return err
+				}
+				log.G(ctx).WithField("ref", ref).Debug("cleanup aborting ingest")
+			}
+			return nil
+		})
+	} else {
+		var statuses []content.Status
+		statuses, err = cs.Store.ListStatuses(ctx)
+		if err != nil {
+			return 0, err
+		}
+		for _, status := range statuses {
+			if _, ok := ingestSeen[status.Ref]; !ok {
+				if err = cs.Store.Abort(ctx, status.Ref); err != nil {
+					return
+				}
+				log.G(ctx).WithField("ref", status.Ref).Debug("cleanup aborting ingest")
+			}
+		}
+	}
 	return
 }

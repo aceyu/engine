@@ -243,7 +243,7 @@ func (nDB *NetworkDB) clusterLeave() error {
 }
 
 func (nDB *NetworkDB) triggerFunc(stagger time.Duration, C <-chan time.Time, f func()) {
-	// Use a random stagger to avoid syncronizing
+	// Use a random stagger to avoid synchronizing
 	randStagger := time.Duration(uint64(rnd.Int63()) % uint64(stagger))
 	select {
 	case <-time.After(randStagger):
@@ -288,7 +288,12 @@ func (nDB *NetworkDB) rejoinClusterBootStrap() {
 		return
 	}
 
-	myself, _ := nDB.nodes[nDB.config.NodeID]
+	myself, ok := nDB.nodes[nDB.config.NodeID]
+	if !ok {
+		nDB.RUnlock()
+		logrus.Warnf("rejoinClusterBootstrap unable to find local node info using ID:%v", nDB.config.NodeID)
+		return
+	}
 	bootStrapIPs := make([]string, 0, len(nDB.bootStrapIP))
 	for _, bootIP := range nDB.bootStrapIP {
 		// botostrap IPs are usually IP:port from the Join

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/containerd/containerd/contrib/seccomp"
 	"github.com/containerd/containerd/mount"
@@ -21,9 +22,11 @@ import (
 	"github.com/moby/buildkit/executor"
 	"github.com/moby/buildkit/executor/oci"
 	"github.com/moby/buildkit/identity"
+	"github.com/moby/buildkit/solver/pb"
+	"github.com/moby/buildkit/util/network"
 	rootlessspecconv "github.com/moby/buildkit/util/rootless/specconv"
 	"github.com/moby/buildkit/util/system"
-	"github.com/opencontainers/runtime-spec/specs-go"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -34,18 +37,22 @@ type Opt struct {
 	CommandCandidates []string
 	// without root privileges (has nothing to do with Opt.Root directory)
 	Rootless bool
+	// DefaultCgroupParent is the cgroup-parent name for executor
+	DefaultCgroupParent string
 }
 
 var defaultCommandCandidates = []string{"buildkit-runc", "runc"}
 
 type runcExecutor struct {
-	runc     *runc.Runc
-	root     string
-	cmd      string
-	rootless bool
+	runc             *runc.Runc
+	root             string
+	cmd              string
+	cgroupParent     string
+	rootless         bool
+	networkProviders map[pb.NetMode]network.Provider
 }
 
-func New(opt Opt) (executor.Executor, error) {
+func New(opt Opt, networkProviders map[pb.NetMode]network.Provider) (executor.Executor, error) {
 	cmds := opt.CommandCandidates
 	if cmds == nil {
 		cmds = defaultCommandCandidates
@@ -78,34 +85,56 @@ func New(opt Opt) (executor.Executor, error) {
 		return nil, err
 	}
 
+	// clean up old hosts/resolv.conf file. ignore errors
+	os.RemoveAll(filepath.Join(root, "hosts"))
+	os.RemoveAll(filepath.Join(root, "resolv.conf"))
+
 	runtime := &runc.Runc{
 		Command:      cmd,
 		Log:          filepath.Join(root, "runc-log.json"),
 		LogFormat:    runc.JSON,
-		PdeathSignal: syscall.SIGKILL,
+		PdeathSignal: syscall.SIGKILL, // this can still leak the process
 		Setpgid:      true,
 		// we don't execute runc with --rootless=(true|false) explicitly,
 		// so as to support non-runc runtimes
 	}
 
 	w := &runcExecutor{
-		runc:     runtime,
-		root:     root,
-		rootless: opt.Rootless,
+		runc:             runtime,
+		root:             root,
+		cgroupParent:     opt.DefaultCgroupParent,
+		rootless:         opt.Rootless,
+		networkProviders: networkProviders,
 	}
 	return w, nil
 }
 
 func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.Mountable, mounts []executor.Mount, stdin io.ReadCloser, stdout, stderr io.WriteCloser) error {
+	provider, ok := w.networkProviders[meta.NetMode]
+	if !ok {
+		return errors.Errorf("unknown network mode %s", meta.NetMode)
+	}
+	namespace, err := provider.New()
+	if err != nil {
+		return err
+	}
+	defer namespace.Close()
+
+	if meta.NetMode == pb.NetMode_HOST {
+		logrus.Info("enabling HostNetworking")
+	}
 
 	resolvConf, err := oci.GetResolvConf(ctx, w.root)
 	if err != nil {
 		return err
 	}
 
-	hostsFile, err := oci.GetHostsFile(ctx, w.root)
+	hostsFile, clean, err := oci.GetHostsFile(ctx, w.root, meta.ExtraHosts)
 	if err != nil {
 		return err
+	}
+	if clean != nil {
+		defer clean()
 	}
 
 	mountable, err := root.Mount(ctx, false)
@@ -145,6 +174,7 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 		return err
 	}
 	defer f.Close()
+
 	opts := []containerdoci.SpecOpts{oci.WithUIDGID(uid, gid, sgids)}
 	if system.SeccompSupported() {
 		opts = append(opts, seccomp.WithDefaultProfile())
@@ -152,7 +182,18 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 	if meta.ReadonlyRootFS {
 		opts = append(opts, containerdoci.WithRootFSReadonly())
 	}
-	spec, cleanup, err := oci.GenerateSpec(ctx, meta, mounts, id, resolvConf, hostsFile, opts...)
+
+	if w.cgroupParent != "" {
+		var cgroupsPath string
+		lastSeparator := w.cgroupParent[len(w.cgroupParent)-1:]
+		if strings.Contains(w.cgroupParent, ".slice") && lastSeparator == ":" {
+			cgroupsPath = w.cgroupParent + id
+		} else {
+			cgroupsPath = filepath.Join("/", w.cgroupParent, "buildkit", id)
+		}
+		opts = append(opts, containerdoci.WithCgroup(cgroupsPath))
+	}
+	spec, cleanup, err := oci.GenerateSpec(ctx, meta, mounts, id, resolvConf, hostsFile, namespace, opts...)
 	if err != nil {
 		return err
 	}
@@ -167,7 +208,7 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 	if err != nil {
 		return errors.Wrapf(err, "working dir %s points to invalid target", newp)
 	}
-	if err := os.MkdirAll(newp, 0700); err != nil {
+	if err := os.MkdirAll(newp, 0755); err != nil {
 		return errors.Wrapf(err, "failed to create working directory %s", newp)
 	}
 
@@ -184,23 +225,58 @@ func (w *runcExecutor) Exec(ctx context.Context, meta executor.Meta, root cache.
 		return err
 	}
 
-	logrus.Debugf("> running %s %v", id, meta.Args)
+	// runCtx/killCtx is used for extra check in case the kill command blocks
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
 
-	status, err := w.runc.Run(ctx, id, bundle, &runc.CreateOpts{
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				killCtx, timeout := context.WithTimeout(context.Background(), 7*time.Second)
+				if err := w.runc.Kill(killCtx, id, int(syscall.SIGKILL), nil); err != nil {
+					logrus.Errorf("failed to kill runc %s: %+v", id, err)
+					select {
+					case <-killCtx.Done():
+						timeout()
+						cancelRun()
+						return
+					default:
+					}
+				}
+				timeout()
+				select {
+				case <-time.After(50 * time.Millisecond):
+				case <-done:
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	logrus.Debugf("> creating %s %v", id, meta.Args)
+	status, err := w.runc.Run(runCtx, id, bundle, &runc.CreateOpts{
 		IO: &forwardIO{stdin: stdin, stdout: stdout, stderr: stderr},
 	})
-	logrus.Debugf("< completed %s %v %v", id, status, err)
-	if status != 0 {
-		select {
-		case <-ctx.Done():
-			// runc can't report context.Cancelled directly
-			return errors.Wrapf(ctx.Err(), "exit code %d", status)
-		default:
-		}
-		return errors.Errorf("exit code %d", status)
+	close(done)
+	if err != nil {
+		return err
 	}
 
-	return err
+	if status != 0 {
+		err := errors.Errorf("exit code: %d", status)
+		select {
+		case <-ctx.Done():
+			return errors.Wrapf(ctx.Err(), err.Error())
+		default:
+			return err
+		}
+	}
+
+	return nil
 }
 
 type forwardIO struct {

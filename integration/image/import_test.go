@@ -9,17 +9,17 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/internal/test/request"
 	"github.com/docker/docker/internal/testutil"
+	"gotest.tools/skip"
 )
 
 // Ensure we don't regress on CVE-2017-14992.
 func TestImportExtremelyLargeImageWorks(t *testing.T) {
-	if runtime.GOARCH == "arm64" {
-		t.Skip("effective test will be time out")
-	}
+	skip.If(t, runtime.GOARCH == "arm64", "effective test will be time out")
+	skip.If(t, testEnv.OSType == "windows", "TODO enable on windows")
 
-	client := request.NewAPIClient(t)
+	defer setupTest(t)()
+	client := testEnv.APIClient()
 
 	// Construct an empty tar archive with about 8GB of junk padding at the
 	// end. This should not cause any crashes (the padding should be mostly

@@ -11,16 +11,17 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/boltdb/bolt"
 	"github.com/docker/docker/pkg/locker"
 	"github.com/moby/buildkit/cache"
 	"github.com/moby/buildkit/cache/metadata"
+	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/identity"
 	"github.com/moby/buildkit/snapshot"
 	"github.com/moby/buildkit/source"
 	"github.com/moby/buildkit/util/progress/logs"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	bolt "go.etcd.io/bbolt"
 )
 
 var validHex = regexp.MustCompile(`^[a-f0-9]{40}$`)
@@ -36,17 +37,20 @@ type gitSource struct {
 	locker *locker.Locker
 }
 
+// Supported returns nil if the system supports Git source
+func Supported() error {
+	if err := exec.Command("git", "version").Run(); err != nil {
+		return errors.Wrap(err, "failed to find git binary")
+	}
+	return nil
+}
+
 func NewSource(opt Opt) (source.Source, error) {
 	gs := &gitSource{
 		md:     opt.MetadataStore,
 		cache:  opt.CacheAccessor,
 		locker: locker.New(),
 	}
-
-	if err := exec.Command("git", "version").Run(); err != nil {
-		return nil, errors.Wrap(err, "failed to find git binary")
-	}
-
 	return gs, nil
 }
 
@@ -263,7 +267,7 @@ func (gs *gitSourceHandler) Snapshot(ctx context.Context) (out cache.ImmutableRe
 		}
 	}
 
-	checkoutRef, err := gs.cache.New(ctx, nil, cache.WithDescription(fmt.Sprintf("git snapshot for %s#%s", gs.src.Remote, ref)))
+	checkoutRef, err := gs.cache.New(ctx, nil, cache.WithRecordType(client.UsageRecordTypeGitCheckout), cache.WithDescription(fmt.Sprintf("git snapshot for %s#%s", gs.src.Remote, ref)))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create new mutable for %s", gs.src.Remote)
 	}

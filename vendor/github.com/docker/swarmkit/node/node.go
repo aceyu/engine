@@ -2,6 +2,7 @@ package node
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"io/ioutil"
@@ -17,7 +18,6 @@ import (
 	"github.com/docker/swarmkit/ca/keyutils"
 	"github.com/docker/swarmkit/identity"
 
-	"github.com/boltdb/bolt"
 	"github.com/docker/docker/pkg/plugingetter"
 	metrics "github.com/docker/go-metrics"
 	"github.com/docker/swarmkit/agent"
@@ -28,13 +28,14 @@ import (
 	"github.com/docker/swarmkit/ioutils"
 	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/manager"
+	"github.com/docker/swarmkit/manager/allocator/cnmallocator"
 	"github.com/docker/swarmkit/manager/encryption"
 	"github.com/docker/swarmkit/remotes"
 	"github.com/docker/swarmkit/xnet"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
+	bolt "go.etcd.io/bbolt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
@@ -104,6 +105,9 @@ type Config struct {
 	// AdvertiseRemoteAPI specifies the address that should be advertised
 	// for connections to the remote API (including the raft service).
 	AdvertiseRemoteAPI string
+
+	// NetworkConfig stores network related config for the cluster
+	NetworkConfig *cnmallocator.NetworkConfig
 
 	// Executor specifies the executor to use for the agent.
 	Executor exec.Executor
@@ -995,6 +999,7 @@ func (n *Node) runManager(ctx context.Context, securityConfig *ca.SecurityConfig
 		PluginGetter:     n.config.PluginGetter,
 		RootCAPaths:      rootPaths,
 		FIPS:             n.config.FIPS,
+		NetworkConfig:    n.config.NetworkConfig,
 	})
 	if err != nil {
 		return false, err
@@ -1199,19 +1204,16 @@ func (s *persistentRemotes) Observe(peer api.Peer, weight int) {
 	s.c.Broadcast()
 	if err := s.save(); err != nil {
 		logrus.Errorf("error writing cluster state file: %v", err)
-		return
 	}
-	return
 }
+
 func (s *persistentRemotes) Remove(peers ...api.Peer) {
 	s.Lock()
 	defer s.Unlock()
 	s.Remotes.Remove(peers...)
 	if err := s.save(); err != nil {
 		logrus.Errorf("error writing cluster state file: %v", err)
-		return
 	}
-	return
 }
 
 func (s *persistentRemotes) save() error {

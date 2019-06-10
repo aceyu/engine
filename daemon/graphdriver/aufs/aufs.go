@@ -135,13 +135,13 @@ func Init(root string, options []string, uidMaps, gidMaps []idtools.IDMap) (grap
 		return nil, err
 	}
 	// Create the root aufs driver dir
-	if err := idtools.MkdirAllAndChown(root, 0700, idtools.IDPair{UID: rootUID, GID: rootGID}); err != nil {
+	if err := idtools.MkdirAllAndChown(root, 0700, idtools.Identity{UID: rootUID, GID: rootGID}); err != nil {
 		return nil, err
 	}
 
 	// Populate the dir structure
 	for _, p := range paths {
-		if err := idtools.MkdirAllAndChown(path.Join(root, p), 0700, idtools.IDPair{UID: rootUID, GID: rootGID}); err != nil {
+		if err := idtools.MkdirAllAndChown(path.Join(root, p), 0700, idtools.Identity{UID: rootUID, GID: rootGID}); err != nil {
 			return nil, err
 		}
 	}
@@ -289,7 +289,7 @@ func (a *Driver) createDirsFor(id string) error {
 	// The path of directories are <aufs_root_path>/mnt/<image_id>
 	// and <aufs_root_path>/diff/<image_id>
 	for _, p := range paths {
-		if err := idtools.MkdirAllAndChown(path.Join(a.rootPath(), p, id), 0755, idtools.IDPair{UID: rootUID, GID: rootGID}); err != nil {
+		if err := idtools.MkdirAllAndChown(path.Join(a.rootPath(), p, id), 0755, idtools.Identity{UID: rootUID, GID: rootGID}); err != nil {
 			return err
 		}
 	}
@@ -373,7 +373,7 @@ func atomicRemove(source string) error {
 	case os.IsExist(err):
 		// Got error saying the target dir already exists, maybe the source doesn't exist due to a previous (failed) remove
 		if _, e := os.Stat(source); !os.IsNotExist(e) {
-			return errors.Wrapf(err, "target rename dir '%s' exists but should not, this needs to be manually cleaned up")
+			return errors.Wrapf(err, "target rename dir %q exists but should not, this needs to be manually cleaned up", target)
 		}
 	default:
 		return errors.Wrapf(err, "error preparing atomic delete")
