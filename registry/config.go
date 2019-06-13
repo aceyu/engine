@@ -190,9 +190,6 @@ func (config *serviceConfig) LoadInsecureRegistries(registries []string) error {
 	// TODO: should we deprecate this once it is easier for people to set up a TLS registry or change
 	// daemon flags on boot2docker?
 	registries = append(registries, "127.0.0.0/8")
-	if defaultRegistryInsecure {
-		registries = append(registries, DefaultRegistry)
-	}
 
 	// Store original InsecureRegistryCIDRs and IndexConfigs
 	// Clean InsecureRegistryCIDRs and IndexConfigs in config, as passed registries has all insecure registry info.
@@ -254,6 +251,15 @@ skip:
 		}
 	}
 
+	if DefaultRegistry != "" && DefaultRegistry != IndexName {
+		config.IndexConfigs[DefaultRegistry] = &registrytypes.IndexInfo{
+			Name:     DefaultRegistry,
+			Mirrors:  config.Mirrors,
+			Secure:   !defaultRegistryInsecure,
+			Official: true,
+		}
+		return nil
+	}
 	// Configure public registry.
 	config.IndexConfigs[IndexName] = &registrytypes.IndexInfo{
 		Name:     IndexName,
